@@ -13,7 +13,9 @@ let
               system.stateVersion = "24.05";
               fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
               boot.loader.grub.enable = false;
-              networking.nameservers = [ "10.0.2.3" ];
+              networking.resolvconf.enable = false;
+              networking.dhcpcd.extraConfig = "nohook resolv.conf";
+              environment.etc."resolv.conf".text = "nameserver 10.0.2.3\n";
               nix.settings.experimental-features = [ "nix-command" "flakes" ];
               nix.settings.substituters = [ "https://cache.nixos.org" ];
               environment.systemPackages = [
@@ -37,7 +39,9 @@ pkgs.testers.runNixOSTest {
 
     programs.nyet.enable = true;
     networking.hostName = "machine";
-    networking.nameservers = [ "10.0.2.3" ];
+    networking.resolvconf.enable = false;
+    networking.dhcpcd.extraConfig = "nohook resolv.conf";
+    environment.etc."resolv.conf".text = "nameserver 10.0.2.3\n";
 
     environment.systemPackages = [ pkgs.nix pkgs.nixos-rebuild ];
 
