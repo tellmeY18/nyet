@@ -41,7 +41,7 @@ Frontends are replaceable clients. The CLI is the reference client; software sto
 
 ## Current state
 
-The implemented code is still the M1 read model, the M2 intent/plan model, and the managed-module MVP for M3. It works against fixture configurations and a fixed `/etc/nixos` target. Apply and rollback are covered by a disposable NixOS VM test in CI.
+The implemented code is the M1 read model, the M2 intent/plan model, the managed-module MVP for M3, and the first read-only repository slice for M4. The M4 slice discovers a configuration root, parses `.nix` files with `rnix`, records imports, and renders a classic-to-standard migration plan. It does not apply edits yet. Apply and rollback are covered by a disposable NixOS VM test in CI.
 
 The target architecture in this document is repository-aware editing and migration. Do not describe the parser, migration, package store, protocol, or daemon as working until they exist.
 
@@ -58,18 +58,19 @@ Implemented:
 - Deterministic managed-module rendering and line diffs.
 - Plan warnings when a selected option is also defined outside nixpkgs.
 - Candidate-module evaluation check: `nyet plan --check`.
-- CLI: `options`, `get`, `set`, `unset`, `add`, `remove`, `intents`, `plan`, `apply`, `rollback`, and `history`.
+- CLI: `options`, `get`, `set`, `unset`, `add`, `remove`, `intents`, `plan`, `apply`, `rollback`, `history`, `scan`, and `migration-plan`.
+- Read-only repository discovery and CST parsing with `rnix`: configuration kind, host, file list, relative imports, syntax errors, standard-layout detection, and a classic migration plan.
 - Plan staging under the user runtime directory with ownership, mode, size, expiry, and module-grammar validation in the helper.
 - Privileged helper: fixed plan ID, fixed `/etc/nixos` input, wrapper flake at `/var/lib/nyet/flake.nix`, managed module at `/var/lib/nyet/nyet.nix`, builds as the requesting user, then runs fixed `nh os switch /var/lib/nyet#<host>` as root, transaction records under `/var/lib/nyet/transactions`, and one-step rollback.
 - `packages.default`, `nixosModules.default`, and a polkit rule requiring admin authentication for `nyet-helper`.
-- 66 tests on Darwin (67 on Linux): core unit, helper unit, fixture evaluation, golden render, and CLI integration.
+- 73 tests on Darwin (74 on Linux): core unit, repository scan and migration-plan tests, helper unit, fixture evaluation, golden render, and CLI integration.
 - A green x86_64-linux NixOS VM test for apply and rollback, including a non-root build path, run by GitHub Actions.
 - Nix dev shell.
 
 Not implemented:
 
-- Repository scanning, CST parsing, definition indexing, and provenance for edit targets.
-- The standard repository layout and first-run migration.
+- Definition indexing, provenance correlation, and in-place edits.
+- Applying migration plans.
 - In-place editing of existing definitions.
 - Package search and software-store flows.
 - Option tier metadata and the beginner-first UI model.
@@ -144,7 +145,7 @@ After first-run migration, the supported layout is:
 ```text
 flake.nix
 hosts/<host>/configuration.nix
-hosts/<host>/hardware.nix
+hosts/<host>/hardware-configuration.nix
 modules/...
 ```
 
@@ -264,8 +265,8 @@ See [docs/prior-art.md](docs/prior-art.md).
 ## Next steps
 
 1. Keep the repository-aware architecture documents and ADRs current.
-2. Add read-only repository discovery and CST indexing: files, imports, hosts, definitions, and edit ranges.
-3. Add an explicit migration plan that normalizes the supported layout, with snapshots, evaluation, diffs, and rollback.
+2. Finish repository indexing: definitions, edit ranges, provenance correlation, and ambiguity rules.
+3. Apply the migration plan atomically, with snapshots, evaluation, diffs, and rollback.
 4. Add in-place setting edits, package-list edits, and tier metadata.
 5. Add the unprivileged engine service, `nyet-protocol`, and the first software-store client.
 6. Add the first graphical frontend after the service contract is exercised.

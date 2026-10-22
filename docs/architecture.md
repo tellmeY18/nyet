@@ -2,7 +2,7 @@
 
 Status: draft.
 
-Implementation note: the current code still implements the managed-module MVP described in ADR 0004. This document describes the target repository-aware architecture from ADR 0005. Unbuilt pieces are marked planned.
+Implementation note: the current code implements the managed-module MVP described in ADR 0004 plus a read-only repository scan and classic migration plan. This document describes the target repository-aware architecture from ADR 0005. Unbuilt pieces are marked planned.
 
 ## Problem
 
@@ -72,7 +72,7 @@ Migration is an explicit first-run transaction that normalizes a repository into
 ```text
 flake.nix
 hosts/<host>/configuration.nix
-hosts/<host>/hardware.nix
+hosts/<host>/hardware-configuration.nix
 modules/...
 ```
 

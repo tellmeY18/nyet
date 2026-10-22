@@ -36,7 +36,7 @@ After migration, a repository uses a single, predictable layout:
 ```text
 flake.nix
 hosts/<host>/configuration.nix
-hosts/<host>/hardware.nix
+hosts/<host>/hardware-configuration.nix
 modules/...
 ```
 

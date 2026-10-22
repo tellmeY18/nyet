@@ -4,8 +4,8 @@ use std::process::{Command as ProcessCommand, ExitCode};
 use clap::{Parser, Subcommand};
 use nyet_core::{
     apply_safe_host, apply_safe_path, build_plan, current_uid, default_cache_dir,
-    default_state_dir, stage_plan, validate, Engine, EngineConfig, Error, Intent, IntentOp,
-    IntentStore, OptionPath, OptionSpec, Plan, Result, Value,
+    default_state_dir, migration_plan, scan, stage_plan, validate, Engine, EngineConfig, Error,
+    Intent, IntentOp, IntentStore, OptionPath, OptionSpec, Plan, Result, Value,
 };
 
 const HELPER_PATH: &str = "/run/current-system/sw/bin/nyet-helper";
@@ -81,6 +81,11 @@ enum Command {
         yes: bool,
     },
     History,
+    Scan,
+    MigrationPlan {
+        #[arg(long)]
+        system: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -111,6 +116,8 @@ fn run(cli: Cli) -> Result<()> {
         Command::Apply { yes } => apply(&cli, *yes),
         Command::Rollback { yes } => rollback(&cli, *yes),
         Command::History => history(&cli),
+        Command::Scan => scan_repo(&cli),
+        Command::MigrationPlan { system } => migration_plan_for(&cli, system),
     }
 }
 
@@ -408,6 +415,88 @@ fn rollback(cli: &Cli, yes: bool) -> Result<()> {
         )));
     }
     emit("rollback complete\n")
+}
+
+fn scan_repo(cli: &Cli) -> Result<()> {
+    let root = cli
+        .flake
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(CONFIGURATION_PATH));
+    let repo = scan(&root, cli.host.as_deref())?;
+
+    if cli.json {
+        return emit(&format!("{}\n", serde_json::to_string_pretty(&repo)?));
+    }
+
+    let kind = match repo.kind {
+        nyet_core::RepoKind::Flake => "flake",
+        nyet_core::RepoKind::Classic => "classic",
+    };
+    let mut text = String::new();
+    text.push_str(&format!("root: {}\n", repo.root.display()));
+    text.push_str(&format!("kind: {kind}\n"));
+    text.push_str(&format!(
+        "host: {}\n",
+        repo.host.as_deref().unwrap_or("unknown")
+    ));
+    text.push_str(&format!("standard: {}\n", repo.standard));
+    text.push_str(&format!("files: {}\n", repo.files.len()));
+    if !repo.missing.is_empty() {
+        text.push_str(&format!("missing: {}\n", repo.missing.join(", ")));
+    }
+    for warning in &repo.warnings {
+        text.push_str(&format!("warning: {warning}\n"));
+    }
+    for file in &repo.files {
+        text.push_str(&format!("  {}\n", file.path));
+        for import in &file.imports {
+            text.push_str(&format!("    import {import}\n"));
+        }
+        for error in &file.syntax_errors {
+            text.push_str(&format!("    syntax error: {error}\n"));
+        }
+    }
+    emit(&text)
+}
+
+fn migration_plan_for(cli: &Cli, system: &str) -> Result<()> {
+    let root = cli
+        .flake
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(CONFIGURATION_PATH));
+    let repo = scan(&root, cli.host.as_deref())?;
+    let host = cli
+        .host
+        .clone()
+        .ok_or_else(|| Error::Usage("--host is required".to_string()))?;
+    let plan = migration_plan(&repo, &host, system)?;
+
+    if cli.json {
+        return emit(&format!("{}\n", serde_json::to_string_pretty(&plan)?));
+    }
+
+    let mut text = String::new();
+    text.push_str(&format!("root: {}\n", plan.root.display()));
+    text.push_str(&format!("host: {}\n", plan.host));
+    text.push_str(&format!("system: {}\n", plan.system));
+    text.push_str(&format!(
+        "changed files: {}\n",
+        plan.changed_files().join(", ")
+    ));
+    for operation in &plan.operations {
+        match operation {
+            nyet_core::FileOperation::Create { path, contents } => {
+                text.push_str(&format!("create {path}\n{contents}"));
+            }
+            nyet_core::FileOperation::Rename { from, to } => {
+                text.push_str(&format!("rename {from} -> {to}\n"));
+            }
+        }
+    }
+    for warning in &plan.warnings {
+        text.push_str(&format!("warning: {warning}\n"));
+    }
+    emit(&text)
 }
 
 fn history(cli: &Cli) -> Result<()> {

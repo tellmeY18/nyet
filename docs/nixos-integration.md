@@ -1,6 +1,6 @@
 # NixOS integration
 
-Status: draft. The current code implements the managed-module MVP. Repository scanning, migration, and in-place editing are not implemented.
+Status: draft. The current code implements the managed-module MVP and a read-only repository scan plus a classic migration plan. Migration apply and in-place editing are not implemented.
 
 ## Source of truth
 
@@ -46,7 +46,7 @@ After migration, the supported layout is:
 ```text
 flake.nix
 hosts/<host>/configuration.nix
-hosts/<host>/hardware.nix
+hosts/<host>/hardware-configuration.nix
 modules/...
 ```
 

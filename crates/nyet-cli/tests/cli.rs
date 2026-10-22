@@ -351,3 +351,62 @@ fn history_json_is_an_array() {
     let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
     assert!(value.is_array());
 }
+
+#[test]
+fn scans_a_classic_repository_without_nix() {
+    let repo = temporary_directory("classic-scan");
+    std::fs::write(
+        repo.join("configuration.nix"),
+        "{ ... }: { imports = [ ./hardware-configuration.nix ]; }",
+    )
+    .unwrap();
+    std::fs::write(repo.join("hardware-configuration.nix"), "{ ... }: { }").unwrap();
+    let flake = repo.display().to_string();
+
+    let output = nyet(&["--flake", &flake, "--host", "phone", "--json", "scan"]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(value["kind"], serde_json::json!("classic"));
+    assert_eq!(value["host"], serde_json::json!("phone"));
+    assert_eq!(value["standard"], serde_json::json!(false));
+    assert_eq!(value["files"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn renders_a_classic_migration_plan_without_writing() {
+    let repo = temporary_directory("classic-migration");
+    std::fs::write(
+        repo.join("configuration.nix"),
+        "{ ... }: { imports = [ ./hardware-configuration.nix ]; }",
+    )
+    .unwrap();
+    std::fs::write(repo.join("hardware-configuration.nix"), "{ ... }: { }").unwrap();
+    let flake = repo.display().to_string();
+
+    let output = nyet(&[
+        "--flake",
+        &flake,
+        "--host",
+        "phone",
+        "--json",
+        "migration-plan",
+        "--system",
+        "x86_64-linux",
+    ]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(value["host"], serde_json::json!("phone"));
+    assert_eq!(value["system"], serde_json::json!("x86_64-linux"));
+    assert!(value["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|operation| {
+            operation["op"] == serde_json::json!("rename")
+                && operation["from"] == serde_json::json!("configuration.nix")
+                && operation["to"] == serde_json::json!("hosts/phone/configuration.nix")
+        }));
+    assert!(!repo.join("flake.nix").exists());
+}

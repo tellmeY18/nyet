@@ -6,7 +6,7 @@ It scans an existing NixOS repository, indexes its files and definitions, evalua
 
 ## Status
 
-The current implementation is the M1 read model, the M2 intents and plans model, and the managed-module MVP for M3. It works against fixture configurations and a fixed `/etc/nixos` target. Apply and rollback are verified by a disposable NixOS VM test in CI.
+The current implementation is the M1 read model, the M2 intents and plans model, the managed-module MVP for M3, and the first read-only repository slice for M4. It scans `.nix` files with `rnix` and renders a classic migration plan; it does not apply repository edits yet. Apply and rollback are verified by a disposable NixOS VM test in CI.
 
 The target architecture is different and more ambitious:
 
@@ -17,11 +17,11 @@ The target architecture is different and more ambitious:
 - Serve software stores through a long-running engine and JSON-RPC protocol.
 - Present options through `basic`, `intermediate`, and `advanced` tiers.
 
-None of the repository scanning, migration, in-place editing, package-store, protocol, daemon, or GUI pieces are implemented yet. See [ADR 0005](docs/decisions/0005-repo-aware-editing-and-migration.md) and [ADR 0006](docs/decisions/0006-beginner-first-clients.md).
+A read-only repository scan and classic migration plan are implemented. Migration apply, definition-level provenance, in-place editing, package-store flows, the protocol, daemon, and GUI are not. See [ADR 0005](docs/decisions/0005-repo-aware-editing-and-migration.md) and [ADR 0006](docs/decisions/0006-beginner-first-clients.md).
 
 ## Try it
 
-The commands below exercise the current managed-module MVP, not the target repository-editing model.
+The commands below exercise the current managed-module MVP and the read-only repository scan. They do not exercise the target in-place editing model.
 
 ```bash
 nix develop
@@ -32,6 +32,8 @@ cargo run -p nyet-cli -- --flake tests/fixtures/basic --host basic set services.
 cargo run -p nyet-cli -- --flake tests/fixtures/basic --host basic add boot.kernelModules loop
 cargo run -p nyet-cli -- --flake tests/fixtures/basic --host basic intents
 cargo run -p nyet-cli -- --flake tests/fixtures/basic --host basic plan --check
+cargo run -p nyet-cli -- --flake /path/to/classic --host host scan --json
+cargo run -p nyet-cli -- --flake /path/to/classic --host host migration-plan --system x86_64-linux
 ```
 
 `nyet plan` prints the module and diff without writing anything. `--check` evaluates the candidate module and prints the NixOS toplevel derivation path. Use `--json` for machine-readable output and `--base PATH` to diff against an existing module.
@@ -77,7 +79,8 @@ Current limits:
 - Apply rejects option paths that require quoting, such as `boot.kernel.sysctl."kernel.hostname"`.
 - The managed module must use nyet's restricted literal grammar; arbitrary Nix expressions are rejected by the helper.
 - Rollback is one step (`nh os rollback`) and restores the previous managed module, not an arbitrary generation.
-- There is no repository scanning, migration, in-place editing, package store, protocol, daemon, or GUI.
+- Migration plans are not applied yet, and definition-level provenance and in-place editing are not implemented.
+- There is no package store, protocol, daemon, or GUI.
 
 See [docs/roadmap.md](docs/roadmap.md).
 
@@ -111,7 +114,7 @@ Software stores / CLI / Qt / GTK / Web / TUI
         repository edits + nh
 ```
 
-This is the target shape. Today the CLI calls `nyet-core` directly and writes a managed module; the repository index, socket, and `nyet-protocol` crate are not implemented.
+This is the target shape. Today the CLI calls `nyet-core` directly and writes a managed module. A read-only repository scan and classic migration plan exist; definition provenance, migration apply, the socket, and the `nyet-protocol` crate are not implemented.
 
 Core rules:
 
@@ -158,7 +161,7 @@ After first-run migration, a managed NixOS repository uses:
 ```text
 flake.nix
 hosts/<host>/configuration.nix
-hosts/<host>/hardware.nix
+hosts/<host>/hardware-configuration.nix
 modules/...
 ```
 

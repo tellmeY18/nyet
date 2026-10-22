@@ -1,6 +1,6 @@
 # Testing
 
-Status: 66 tests on Darwin (67 on Linux) across core unit, helper unit, fixture evaluation, golden render, and CLI integration, plus a gated x86_64-linux NixOS VM test run by CI. Repository, migration, and protocol tests are planned.
+Status: 73 tests on Darwin (74 on Linux) across core unit, repository scan and migration-plan tests, helper unit, fixture evaluation, golden render, and CLI integration, plus a gated x86_64-linux NixOS VM test run by CI. Definition, migration-apply, and protocol tests are planned.
 
 Tests are part of the definition of done for every milestone. They are written with the behavior they protect, not in a later cleanup pass.
 
@@ -19,7 +19,7 @@ Tests are part of the definition of done for every milestone. They are written w
 | Layer | What it protects | Where | Default run |
 |---|---|---|---|
 | Unit | Value model, path parsing, type coercion, validation, list membership, rendering, diffing, cache keys, intent store, errors | Next to the code in `nyet-core` | Yes |
-| Repository | Root discovery, file walk, import graph, definition ranges, ambiguity detection, safe/uneditable classification | `tests/fixtures/repos/` | Yes |
+| Repository | Root discovery, file walk, import graph, syntax errors, standard-layout detection, migration-plan generation | Core unit tests with disposable trees | Yes |
 | CST edits | In-place assignment edits, list insertion/removal, comment and formatting preservation, stale hash rejection | `nyet-core` plus golden files | Yes |
 | Fixture evaluation | Real option index, current values, provenance, cache writes, candidate-module check | `tests/fixtures/` | Yes, requires `nix` |
 | Golden | Exact rendered modules, repository edits, migration output, and plan diffs | `tests/golden/` | Yes |

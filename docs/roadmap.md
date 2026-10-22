@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: draft. M0, the POC vertical slice, M1, M2, and the M3 managed-module MVP are complete. The target architecture is repository-aware editing and migration.
+Status: draft. M0, the POC vertical slice, M1, M2, and the M3 managed-module MVP are complete. M4 has started with read-only repository scan and a classic migration plan; migration apply and in-place editing are next.
 
 The order is intentional. Do not build graphical clients before the repository model, migration, and edit paths are proven through the CLI. Tests are part of done for every milestone.
 
@@ -57,7 +57,7 @@ Implemented: plan staging, helper validation, fixed `/etc/nixos` input, wrapper 
 
 A disposable NixOS VM test applies a hostname change, rolls it back, and applies again through a non-root plan to exercise the user build path. GitHub Actions runs the VM test. The managed-module model is superseded by M4–M6.
 
-## M4: Repository index — next
+## M4: Repository index — in progress
 
 - Discover the configuration root and host.
 - Parse every `.nix` file with a lossless CST parser.
@@ -69,7 +69,7 @@ A disposable NixOS VM test applies a hostname change, rolls it back, and applies
 
 Done when a fixture repository, including one that does not use the standard layout, can be scanned without mutation, and every definition site is either editable or explicitly rejected.
 
-## M5: Standard layout and migration
+## M5: Standard layout and migration — plan started
 
 - Define the canonical layout.
 - Detect flake, classic, and mixed repositories.
