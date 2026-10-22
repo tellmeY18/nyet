@@ -75,6 +75,7 @@ pkgs.testers.runNixOSTest {
     programs.nyet.enable = true;
     networking.hostName = "machine";
     system.switch.enable = true;
+    boot.loader.grub.enable = false;
 
     environment.systemPackages = [ pkgs.nix pkgs.nixos-rebuild pkgs.nh ];
 
