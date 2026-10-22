@@ -21,11 +21,13 @@ Responsibilities:
 - Store pending intents.
 - Produce a plan and a diff.
 - Render the managed Nix module.
-- Coordinate dry-builds and apply requests.
-- Record transactions and generation references.
+- Stage validated apply plans for the helper.
+- Model and read transaction records.
 - Stream events to clients.
 
 The engine does not write to root-owned paths. It prepares a plan and asks the helper to apply it.
+
+The engine starts as a library inside `nyet-core`, consumed directly by the CLI. A long-running daemon and socket transport are added only when a second client exists; the core API must not depend on them.
 
 ### Helper
 
@@ -33,10 +35,11 @@ The helper is a small root process invoked through polkit. It must remain audita
 
 Allowed operations:
 
-- Write the generated managed module to a fixed directory.
-- Run a NixOS build or switch with fixed argument construction.
-- Record the resulting generation reference.
-- Roll back to a recorded generation.
+- Validate a plan id, owner, mode, size, expiry, host, and module grammar.
+- Write the generated managed module and wrapper flake to fixed paths.
+- Run a fixed `nixos-rebuild switch --flake /var/lib/nyet#<host>`.
+- Record a transaction and generation reference.
+- Roll back one generation with fixed arguments.
 
 It must not:
 
@@ -46,7 +49,7 @@ It must not:
 - Run a shell.
 - Expose a general-purpose root API.
 
-The helper should receive a plan identifier and read a plan file from a root-owned spool directory. The engine writes the plan into that spool through a narrow, validated handoff.
+The helper receives only a plan identifier. The engine stages a plan under `/run/user/<uid>/nyet/plans` (mode `0600`, ten-minute lifetime; `/run/nyet/plans/0` as root) and the helper reads it as root. The helper validates that the file is regular, owned by the authenticated user, and mode `0600` or stricter.
 
 ### Frontends
 
@@ -61,6 +64,20 @@ Planned frontends:
 - TUI: terminal UI for servers and rescue environments.
 
 No frontend should invoke `nixos-rebuild` or write `/etc/nixos` directly.
+
+### Crate map
+
+The boundaries are enforced by the workspace, not by convention.
+
+Dependency rule: `nyet-cli -> nyet-core`; `nyet-helper -> nothing`.
+
+| Crate | One-sentence contract | Owns | Must never |
+|---|---|---|---|
+| `nyet-core` (lib) | The only component that understands NixOS configuration: read it, model it, propose changes, render them back as Nix. | Option index and cache; evaluation of values, defaults, provenance, conflicts and warnings; typed `Value` and `OptionPath`; intents; validation; plans and diffs; managed-module rendering; transaction and generation records; structured errors. | Depend on argv, sockets, UI, or root paths; parse Nix text as truth; write to the user's repository. |
+| `nyet-cli` (bin `nyet`) | Reference client and debugging surface; a thin interpreter of core calls. | Subcommands, human and JSON output, exit codes; later a client of the engine socket. | Contain configuration logic, evaluate Nix itself, or special-case option semantics. |
+| `nyet-helper` (bin `nyet-helper`) | Tiny privileged executor with a fixed, auditable operation set. | Validate plan id, user, mode, size, expiry, and module grammar; read a plan from the user's private runtime directory; atomically write the managed module and wrapper flake at fixed paths; run a fixed rebuild; record transactions; roll back one generation. | Accept paths, content, or commands; link `nyet-core`; evaluate Nix; run a shell. |
+
+`nyet-protocol` (wire types only) is added with the first non-CLI client. It carries no configuration logic.
 
 ## Data model
 
@@ -106,10 +123,12 @@ A pending desired change to one option. Intents are not applied until the user c
 An intent records:
 
 - Option path.
-- Desired value.
+- Operation: set a value, reset to the default, add a list member, or remove a list member.
+- Desired value or list member.
 - Source client.
 - Timestamp.
-- Whether it is a deletion or reset to default.
+
+There is no enable, install, start, or shell-out intent. Package changes are list-membership intents on a list option such as `environment.systemPackages`.
 
 ### Plan
 
@@ -147,13 +166,28 @@ A transaction contains:
 
 A NixOS system generation reference. Rollback targets a recorded generation, not a reconstructed configuration.
 
+## Declarative write model
+
+Every change becomes declarative Nix in the managed module. There is no imperative escape hatch in the core or the protocol.
+
+- A set intent renders `path = value;`.
+- A reset intent removes the assignment so the NixOS default applies.
+- A list add intent contributes one member to a generated list. NixOS merges lists across modules, so this adds to user-owned lists without rewriting them.
+- A list remove intent removes only a member nyet owns; it cannot remove a member defined by another module.
+- Multiple intents render deterministically, sorted by path, so plans and diffs are stable.
+- A plan diff shows the exact managed-module change and nothing else.
+- If the user's own modules set the same option, the plan reports a warning. nyet never silently overrides a hand-written assignment.
+- The managed module binds `config`, `lib`, and `pkgs` so package and explicit-expression values resolve.
+
+This is what keeps the repository declarative: nyet edits a generated module, never a live system, and every change can be reviewed as text before it is applied. Package installation is not a command; it is membership in a list.
+
 ## Read flow
 
 1. Client calls `engine.capabilities`.
 2. Client calls `options.index` or a paginated/filtered variant.
 3. Client calls `options.get` or `config.evaluate` for the current values it needs.
 4. The engine evaluates against the configured flake or NixOS configuration.
-5. Results are cached by configuration revision and nixpkgs revision.
+5. Results are cached by flake contents, host, and index schema version.
 
 Evaluation must not block the protocol loop. Long reads run in a worker and stream progress or completion events.
 
@@ -166,28 +200,38 @@ Evaluation must not block the protocol loop. Long reads run in a worker and stre
 5. Engine runs a dry-build or evaluation check.
 6. Engine returns a plan with a diff, warnings, and a confirmation token.
 7. Client calls `plan.apply` with the plan identifier and token.
-8. Engine hands the plan to the helper through the validated spool.
-9. Helper writes the managed module and runs the rebuild.
-10. Engine streams build output as events.
-11. On success, engine records a transaction and generation.
-12. On failure, the previous generation remains active; the transaction records the failure.
+8. Engine stages the plan in the user runtime directory and passes only the id to the helper.
+9. Helper validates the plan and writes the wrapper flake and managed module atomically.
+10. Helper runs the fixed rebuild and passes build output through.
+11. On success, helper records a transaction and generation and removes the plan.
+12. On failure, helper restores the previous module and wrapper; the active generation is unchanged and the transaction records the failure.
 
 ## Security boundary
 
 The frontend is untrusted from the helper's point of view.
 
-- The helper is invoked by the engine, not by a frontend.
-- The helper receives opaque identifiers, not paths or content.
-- The helper validates every path against a fixed allowlist.
-- The helper runs one operation at a time under a lock.
-- The helper does not inherit a shell or user-controlled environment.
-- Build output is returned to the engine; it is not blindly executed.
+- The helper is invoked by the engine or CLI, not by a remote frontend.
+- The helper receives an opaque plan id, not paths or content.
+- The helper accepts only `apply <id>` and `rollback`.
+- The helper validates plan ownership, mode, size, expiry, host, and a restricted literal module grammar.
+- The helper uses fixed `/etc/nixos` and `/var/lib/nyet` paths and a fixed rebuild command.
+- The helper serializes apply and rollback with an exclusive lock.
+- The helper clears the environment before invoking `nixos-rebuild`.
+- Build output is inherited by the invoking terminal; it is not captured or uploaded.
 
-Polkit identifies the requesting user. The helper must verify that the plan belongs to that user and has not expired.
+Polkit identifies the requesting user through `PKEXEC_UID`. The helper verifies that the plan belongs to that user and has not expired. Any user authorized to apply NixOS changes can still select option values that execute code during a build; polkit authentication, not the grammar, is the trust boundary.
 
 ## Evaluation strategy
 
 NixOS evaluation is the source of truth. The engine must not infer effective configuration by parsing text.
+
+The engine shells out to `nix eval --json --impure` with embedded expressions that use `builtins.getFlake`. The bulk index carries path, type, description, `defaultText`, flags, and declarations. Arbitrary defaults are not forced in bulk because some NixOS defaults throw; a typed default is fetched per option only when it is safe. Values and defaults are sanitized before serialization: functions become null, derivations become their `outPath`, and paths become strings.
+
+The index is cached under the nyet cache directory. The cache key includes the canonical flake path, the lock file and configuration contents, the host, and an index schema version. A write-through cache is best effort: cache failures never fail a read.
+
+Provenance is fetched for selected paths, not in the bulk index, because forcing `isDefined` on every option can force throwing defaults. Definitions under the flake's nixpkgs input are filtered out; remaining definition files are treated as user or external-module definitions for conflict warnings.
+
+See [ADR 0003](decisions/0003-option-evaluation.md).
 
 Expected inputs:
 
@@ -216,7 +260,7 @@ Open questions:
 nyet writes a dedicated module, for example:
 
 ```nix
-{ ... }:
+{ config, lib, pkgs, ... }:
 {
   services.openssh.enable = true;
 }
@@ -240,10 +284,16 @@ Rules:
 - Interrupted apply: on next startup, reconcile the transaction record with the active generation.
 - Corrupt state: fail closed and report, rather than guessing.
 
+## Testing strategy
+
+Core behavior is tested through the library against fixture configurations, never the developer's host. Rendering and plan diffs are protected by golden tests. Privileged behavior is kept behind the helper boundary and verified in a Linux VM.
+
+Tests are part of done for every milestone. See [testing.md](testing.md).
+
 ## Open design questions
 
 - Exact option evaluation implementation.
-- Whether the engine exposes a daemon, a library, or both.
+- When to add the protocol crate and daemon (trigger: a second client; the CLI calls the library until then).
 - How to represent package values and arbitrary expressions.
 - How to model multi-host flake configurations.
 - How much of Home Manager and nix-darwin to support in the first version.

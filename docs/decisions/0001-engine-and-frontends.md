@@ -36,7 +36,7 @@ Negative:
 
 - More up-front design work than a single GTK app.
 - Protocol versioning and compatibility become ongoing concerns.
-- The engine must be packaged and run as a service or spawned consistently.
+- The engine must be packaged and run consistently. It starts as a library consumed by the CLI; the service arrives with the second client.
 - A privileged helper still requires careful review.
 
 ## Alternatives considered
@@ -65,3 +65,5 @@ Rejected. This would reproduce the coupling problem and make other clients expen
 - Helper spool format.
 - First-run setup flow.
 - Which option types are editable in the first release.
+
+Crate boundaries and the intent-only client contract are decided in [ADR 0002](0002-crate-boundaries.md). The POC evaluation mechanism is decided in [ADR 0003](0003-option-evaluation.md).

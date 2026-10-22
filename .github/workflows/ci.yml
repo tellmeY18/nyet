@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            system-features = nixos-test benchmark big-parallel
+
+      - name: Rust checks
+        run: |
+          nix develop -c cargo fmt --all --check
+          nix develop -c cargo clippy --workspace --all-targets -- -D warnings
+          nix develop -c cargo test --workspace
+
+      - name: Nix flake evaluation
+        run: nix flake check --no-build
+
+      - name: NixOS VM apply and rollback
+        run: nix build .#checks.x86_64-linux.vm -L

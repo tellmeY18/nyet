@@ -13,10 +13,23 @@ cargo test --workspace
 
 The primary development host may be macOS. NixOS VM integration tests require Linux or CI.
 
+## Testing
+
+- Every behavior gets tests with the change that introduces it.
+- Unit tests live next to the code.
+- Nix-backed tests run against fixture configurations under `tests/fixtures/`, never the developer's host.
+- Rendered modules and plan diffs are protected by golden tests.
+- Default tests require no root and do not mutate a real configuration.
+- Linux-only NixOS VM tests are gated and run in CI.
+
+See [docs/testing.md](docs/testing.md).
+
 ## Design changes
 
 - Keep the engine independent of UI toolkits.
 - Keep NixOS evaluation as the source of truth.
+- Keep the dependency rule: `nyet-cli -> nyet-core`; `nyet-helper -> nothing`. Do not add a shared utility crate.
+- Clients express intents only; do not add imperative operations.
 - Do not broaden the helper without a security review.
 - Record architectural changes in `docs/decisions/`.
 

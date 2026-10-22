@@ -1,6 +1,6 @@
 # NixOS integration
 
-Status: draft. This document records intended behavior, not implemented behavior.
+Status: draft. Read, plan, and the MVP apply/rollback path are implemented. Apply and rollback are not yet verified in a disposable NixOS VM.
 
 ## Source of truth
 
@@ -52,14 +52,14 @@ The engine should produce or consume an option index containing:
 - Declarations.
 - Definitions.
 
-The index can be cached by:
+The index is cached by:
 
-- Flake lock revision.
-- Nixpkgs revision.
+- Canonical flake path.
+- Flake lock and `.nix` configuration contents.
 - Host name.
 - Engine schema version.
 
-Invalidate the cache when the lock file or relevant configuration changes.
+The cache is invalidated when the fingerprint changes. It is best effort and never required for correctness.
 
 ## Current values and provenance
 
@@ -75,26 +75,33 @@ Provenance should answer:
 
 Do not promise full provenance until it is measured on real configurations. It may be expensive.
 
-## Managed module
+## Managed module and wrapper
 
-nyet writes a generated module, for example `/etc/nixos/nyet.nix`:
+nyet writes a generated module at `/var/lib/nyet/nyet.nix`:
 
 ```nix
-{ ... }:
+{ config, lib, pkgs, ... }:
 {
   services.openssh.enable = true;
   networking.hostName = "phone";
 }
 ```
 
-The user imports it once:
+The user does not import it into `/etc/nixos`. The helper owns a wrapper flake at `/var/lib/nyet/flake.nix`:
 
 ```nix
-imports = [
-  ./hardware-configuration.nix
-  ./nyet.nix
-];
+{
+  inputs.user.url = "path:/etc/nixos";
+  outputs = { self, user }: {
+    nixosConfigurations."phone" =
+      user.nixosConfigurations."phone".extendModules {
+        modules = [ /var/lib/nyet/nyet.nix ];
+      };
+  };
+}
 ```
+
+This keeps `/etc/nixos` authoritative and hand-written while nyet owns only its own state directory. The wrapper is rewritten before each apply so the host name always matches the plan.
 
 Rules:
 
@@ -102,48 +109,81 @@ Rules:
 - The module only contains options nyet owns.
 - Removing an intent removes the assignment or resets it to the default, according to an explicit policy.
 - If the user defines the same option elsewhere, surface a conflict instead of silently overriding.
-- Keep a backup or generation reference before replacing the module.
+- Keep `/var/lib/nyet/nyet.nix.previous` before replacing the module.
 - Never rewrite unrelated user files.
+- The module must match a restricted literal grammar: a fixed header, unquoted option paths, and literal strings, numbers, booleans, null, lists, attribute sets, or `pkgs.<attrpath>` references. No functions, imports, `with`, `let`, string interpolation, or operators.
+
+## Declarative translation
+
+Every requested change is translated into a declarative assignment in the managed module. nyet never applies an imperative operation.
+
+| Intent | Managed module result |
+|---|---|
+| set `services.openssh.enable = true` | `services.openssh.enable = true;` |
+| reset `services.openssh.enable` | assignment removed; the NixOS default applies |
+| list add `environment.systemPackages` | the member is added to the generated list and merges with user lists |
+| list remove `environment.systemPackages` | the member is removed from the generated list only |
+
+- Rendering is deterministic: intents are sorted by option path.
+- The plan diff shows the exact managed-module change.
+- A conflicting hand-written definition is reported as a warning, never silently overridden.
+- Adding or removing a package is a list-membership intent, not an install command.
+- The managed module binds `config`, `lib`, and `pkgs` so package values resolve.
+- `nyet plan --check` evaluates the candidate module to `system.build.toplevel.drvPath`. It is an evaluation check, not a build.
+
+The user's repository stays declarative because the only file nyet owns is the managed module.
 
 ## Build and apply
 
-The helper is responsible for privileged operations.
+The CLI stages a plan under `/run/user/<uid>/nyet/plans` (mode `0600`, ten-minute lifetime; `/run/nyet/plans/0` as root) and passes only the plan id to the helper through `pkexec`. The helper validates:
 
-Expected operations:
+- The id is a 32-character lowercase hex string.
+- The plan file is regular, owned by `PKEXEC_UID`, mode `0600` or stricter, and no larger than 1 MiB.
+- The plan version, id, uid, host, creation time, and expiry.
+- The module grammar above.
 
-1. Validate the plan and the requesting user.
-2. Write the managed module atomically.
-3. Run a build or switch with fixed arguments.
-4. Record the resulting generation.
-5. Return structured success or failure.
+It then:
 
-Do not pass the module content through a command-line argument. Use a root-owned spool file or stdin with a size limit.
+1. Writes the wrapper flake and managed module atomically.
+2. Saves the previous module at `/var/lib/nyet/nyet.nix.previous`.
+3. Runs `/run/current-system/sw/bin/nixos-rebuild switch --flake /var/lib/nyet#<host>` with a fixed environment.
+4. On failure, restores the previous module and wrapper.
+5. Records a transaction under `/var/lib/nyet/transactions`.
+6. Removes the plan on success.
 
-The exact rebuild command depends on flake versus classic configuration and must be constructed by the helper, not by the frontend.
+Do not pass module content through a command-line argument. The helper never accepts a path, content, or command from the client.
+
+Limits: apply requires a flake at `/etc/nixos`, a host name made of letters, digits, `_`, or `-`, and unquoted option paths. Quoted paths such as `boot.kernel.sysctl."kernel.hostname"` are rejected for apply.
 
 ## Rollback
 
-Rollback should target a recorded NixOS generation.
+Rollback is one step:
 
-- Record the generation before apply.
-- Record the generation after a successful apply.
-- On failure, leave the previous generation active.
-- On explicit rollback, invoke the fixed rollback operation and record it as a new transaction.
+- Record the generation before and after each apply.
+- On failure, leave the active generation unchanged and restore the previous module.
+- On explicit rollback, run `nixos-rebuild switch --rollback`, restore `/var/lib/nyet/nyet.nix` from `.previous`, and record a new transaction.
 
-Do not reconstruct a previous configuration by replaying intents. Use the actual generation.
+The helper serializes apply and rollback with an exclusive lock on `/var/lib/nyet/lock`. Arbitrary recorded-generation rollback and build-log capture are not implemented. Do not reconstruct a previous configuration by replaying intents.
 
 ## First-run setup
+
+Not implemented. Today apply is gated on a fixed `/etc/nixos` flake and on the nyet NixOS module being enabled (`programs.nyet.enable = true`), which installs both binaries and the polkit rule.
 
 The first-run flow must be explicit and reversible:
 
 1. Detect the configuration path and host.
 2. Verify nyet can evaluate it.
-3. Offer to create and import the managed module.
-4. Show exactly what will be written.
-5. Require confirmation.
-6. Record the setup as a transaction.
+3. Show the exact wrapper, managed module, and first plan.
+4. Require confirmation.
+5. Record the setup as a transaction.
 
 Do not silently edit `configuration.nix` or `flake.nix`.
+
+## Testing
+
+Read behavior and rendering are tested against fixture flakes under `tests/fixtures/`, never a real host. Apply and rollback are verified in a disposable Linux VM and gated out of default test runs.
+
+See [testing.md](testing.md).
 
 ## Future targets
 
@@ -160,7 +200,7 @@ Keep the core model backend-neutral enough to add these without redesigning the 
 
 - How to evaluate options efficiently across NixOS versions.
 - How to detect and present conflicting definitions.
-- Whether nyet should manage the flake import automatically.
-- How to handle packages and arbitrary expressions safely.
-- How to test apply and rollback without risking the development host.
+- How to verify apply and rollback on a disposable NixOS VM without risking the development host.
+- How to present and safely support arbitrary expressions beyond `pkgs.<attrpath>`.
+- How to make rollback target an arbitrary recorded generation instead of one step.
 - How to represent secrets and sensitive values without logging them.

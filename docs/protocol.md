@@ -1,6 +1,8 @@
 # Protocol
 
-Status: draft. The protocol is not implemented yet.
+Status: draft. The protocol is not implemented yet. The CLI calls `nyet-core` directly. The wire layer and the `nyet-protocol` crate are added when a second client exists; this document describes the target contract, not current behavior.
+
+The current CLI apply path uses a plan id plus an interactive confirmation (or `--yes`); the confirmation token described below is part of the future protocol, not the MVP CLI.
 
 ## Transport
 
@@ -11,6 +13,18 @@ Status: draft. The protocol is not implemented yet.
 - Peer credentials identify the local user. Do not trust a user-supplied identity field.
 
 A D-Bus adapter may expose a subset for desktop integration, but the Unix socket API remains authoritative.
+
+## Client contract
+
+The protocol is intent-only.
+
+- Clients read the option model, current values, plans, and transactions.
+- Clients express intents on option paths.
+- There is no enable, install, start, rebuild, or shell-out method. Write-side behavior is always `plan.create` then `plan.apply`.
+- Package changes are list-membership intents, not an install command.
+- The engine owns all Nix evaluation and rendering. Clients never send a whole configuration or a shell command.
+
+The same contract holds for the in-process CLI: the library does not expose imperative operations.
 
 ## Versioning
 
@@ -82,12 +96,20 @@ Sets a pending desire. This does not write anything.
 {
   "intents": [
     {
+      "op": "set",
       "path": "services.openssh.enable",
-      "value": true
+      "value": {"type": "bool", "value": true}
+    },
+    {
+      "op": "list_add",
+      "path": "environment.systemPackages",
+      "value": {"type": "package", "value": "pkgs.ripgrep"}
     }
   ]
 }
 ```
+
+Intent operations are `set`, `reset`, `list_add`, and `list_remove`. There is no `enable`, `install`, or `start` operation.
 
 ### `intents.clear`
 
@@ -190,7 +212,7 @@ Errors may include structured `data` for frontends, but must not leak secrets.
 ## Open protocol questions
 
 - Line-delimited JSON versus length-prefixed frames.
-- Whether the engine should be a long-running user service or spawned on demand.
+- When to replace the spawn-per-call CLI path with a long-running user service.
 - How to stream large build logs without blocking commands.
 - How to represent option submodules and nested lists in a UI-friendly way.
 - Whether `plan.apply` should return immediately with a transaction ID or wait for completion.
