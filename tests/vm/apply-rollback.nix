@@ -10,6 +10,7 @@ let
       (import "${nixpkgsPath}/nixos/modules/virtualisation/qemu-vm.nix")
     ];
     system.stateVersion = "24.05";
+    system.switch.enable = true;
     virtualisation.host.pkgs = pkgs;
     fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
     boot.loader.grub.enable = false;
@@ -36,6 +37,7 @@ let
                 (import "${nixpkgsPath}/nixos/modules/virtualisation/qemu-vm.nix")
               ];
               system.stateVersion = "24.05";
+              system.switch.enable = true;
               virtualisation.host.pkgs = pkgs;
               fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
               boot.loader.grub.enable = false;
