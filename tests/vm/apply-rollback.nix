@@ -4,6 +4,8 @@ let
 
   baseModule = { pkgs, ... }: {
     system.stateVersion = "24.05";
+    system.nixos.versionSuffix = "nyet-test";
+    system.nixos.revision = null;
     fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
     boot.loader.grub.enable = false;
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
@@ -25,6 +27,8 @@ let
             { nixpkgs.hostPlatform = "x86_64-linux"; }
             ({ pkgs, ... }: {
               system.stateVersion = "24.05";
+              system.nixos.versionSuffix = "nyet-test";
+              system.nixos.revision = null;
               fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
               boot.loader.grub.enable = false;
               nix.settings.experimental-features = [ "nix-command" "flakes" ];
