@@ -148,7 +148,7 @@ pkgs.testers.runNixOSTest {
     machine.succeed("grep -Fq 'url = ' /etc/nixos/flake.nix")
     machine.succeed("grep -Fq '${nixpkgsPath}' /etc/nixos/flake.nix")
     machine.succeed("test ! -e /etc/nixos/configuration.nix")
-    machine.succeed("nix build --no-link --no-write-lock-file /etc/nixos#machine.config.system.build.toplevel", timeout=1800)
+    machine.succeed("nix build --no-link --no-write-lock-file /etc/nixos#nixosConfigurations.machine.config.system.build.toplevel", timeout=1800)
 
     import json
     history = json.loads(machine.succeed("nyet history --json"))
