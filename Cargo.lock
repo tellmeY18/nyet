@@ -250,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "nyet-cli"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "clap",
  "nyet-core",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "nyet-core"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "rnix",
  "serde",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "nyet-helper"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "libc",
  "serde",

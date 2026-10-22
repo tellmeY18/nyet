@@ -4,6 +4,8 @@ nyet is a headless, repository-aware NixOS configuration engine with multiple fr
 
 It scans an existing NixOS repository, indexes its files and definitions, evaluates the full option surface, and turns software-store or settings-application actions into reviewable declarative Nix. The engine is independent of any one UI toolkit. CLI, Qt/QML, GTK4, web, and TUI clients can all speak the same protocol.
 
+Latest alpha: [`v0.1.0-alpha.1`](https://github.com/tellmeY18/nyet/releases/tag/v0.1.0-alpha.1).
+
 ## Status
 
 The current implementation is the M1 read model, the M2 intents and plans model, the managed-module MVP for M3, and the classic migration slice for M4/M5. It scans `.nix` files with `rnix`, renders a classic-to-standard plan, and applies it through the helper with a snapshot and exact rollback. It does not evaluate or activate the migrated configuration. Apply, rollback, and migration are verified by a disposable NixOS VM test in CI.
@@ -18,6 +20,43 @@ The target architecture is different and more ambitious:
 - Present options through `basic`, `intermediate`, and `advanced` tiers.
 
 Repository scan, classic migration planning, migration apply, snapshots, and exact rollback are implemented. Candidate evaluation, definition-level provenance, in-place editing, package-store flows, the protocol, daemon, and GUI are not. See [ADR 0005](docs/decisions/0005-repo-aware-editing-and-migration.md) and [ADR 0006](docs/decisions/0006-beginner-first-clients.md).
+
+> **Alpha warning:** `v0.1.0-alpha.1` is for testing on a disposable or fully
+> backed-up NixOS machine. Migration is classic-only and does not build or
+> activate the migrated configuration. Review the plan and generated
+> `flake.nix` before switching.
+
+## Install the alpha
+
+Add the pinned flake input and enable the module:
+
+```nix
+{
+  inputs.nyet.url = "github:tellmeY18/nyet/v0.1.0-alpha.1";
+  outputs = { nixpkgs, nyet, ... }: {
+    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+      modules = [
+        nyet.nixosModules.default
+        { programs.nyet.enable = true; }
+      ];
+    };
+  };
+}
+```
+
+Rebuild once to install `nyet`, `nyet-helper`, and the polkit rule. Then review
+and run the migration as root:
+
+```bash
+sudo cp -a /etc/nixos /etc/nixos.pre-nyet
+sudo nyet --flake /etc/nixos --host "$(hostname)" migration-plan --system x86_64-linux
+sudo nyet --flake /etc/nixos --host "$(hostname)" init --system x86_64-linux
+nixos-rebuild switch --flake /etc/nixos#"$(hostname)"
+```
+
+The migration snapshots the original files and can be reverted with
+`nyet migration-rollback <snapshot-id> --yes`. Keep the manual backup until the
+new generation boots successfully.
 
 ## Try it
 
@@ -54,23 +93,9 @@ nyet rollback
 
 For a classic `/etc/nixos`, `nyet init` previews the same migration plan, snapshots the original files, moves `configuration.nix` and `hardware-configuration.nix` under `hosts/<host>/`, generates `flake.nix`, and records a transaction. It does not build or switch; run `nixos-rebuild switch --flake /etc/nixos#<host>` when ready. `nyet migration-rollback <id>` restores the exact pre-migration files and refuses if a migrated file changed.
 
-Enable the helper and polkit rule from the flake:
-
-```nix
-{
-  inputs.nyet.url = "path:/path/to/nyet";
-  outputs = { nixpkgs, nyet, ... }: {
-    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
-      modules = [
-        nyet.nixosModules.default
-        { programs.nyet.enable = true; }
-      ];
-    };
-  };
-}
-```
-
-`nyet.nixosModules.default` installs both binaries and adds a polkit rule requiring admin authentication for the helper.
+For local development, point `inputs.nyet.url` at `path:/path/to/nyet` instead
+of the release tag. `nyet.nixosModules.default` installs both binaries and adds
+a polkit rule requiring admin authentication for the helper.
 
 Pending intents live in the nyet state directory (`$XDG_STATE_HOME/nyet` or `~/.local/state/nyet`). The option cache lives in the cache directory (`$XDG_CACHE_HOME/nyet` or `~/.cache/nyet`). Override them with `NYET_STATE_DIR` and `NYET_CACHE_DIR`; use `--no-cache` or `--refresh` to bypass or refresh the cache.
 
