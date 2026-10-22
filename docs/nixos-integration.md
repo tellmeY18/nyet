@@ -95,13 +95,13 @@ The user does not import it into `/etc/nixos`. The helper owns a wrapper flake a
   outputs = { self, user }: {
     nixosConfigurations."phone" =
       user.nixosConfigurations."phone".extendModules {
-        modules = [ /var/lib/nyet/nyet.nix ];
+        modules = [ ./nyet.nix ];
       };
   };
 }
 ```
 
-This keeps `/etc/nixos` authoritative and hand-written while nyet owns only its own state directory. The wrapper is rewritten before each apply so the host name always matches the plan.
+This keeps `/etc/nixos` authoritative and hand-written while nyet owns only its own state directory. The module path is relative so flake evaluation stays pure. The wrapper is rewritten before each apply so the host name always matches the plan.
 
 Rules:
 

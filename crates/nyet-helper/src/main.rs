@@ -580,7 +580,7 @@ fn plan_directory(uid: u32) -> PathBuf {
 
 fn wrapper(host: &str) -> String {
     format!(
-        "{{\n  inputs.user.url = \"path:{CONFIGURATION_PATH}\";\n  outputs = {{ self, user }}: {{\n    nixosConfigurations.\"{host}\" = user.nixosConfigurations.\"{host}\".extendModules {{\n      modules = [ {MODULE_PATH} ];\n    }};\n  }};\n}}\n"
+        "{{\n  inputs.user.url = \"path:{CONFIGURATION_PATH}\";\n  outputs = {{ self, user }}: {{\n    nixosConfigurations.\"{host}\" = user.nixosConfigurations.\"{host}\".extendModules {{\n      modules = [ ./nyet.nix ];\n    }};\n  }};\n}}\n"
     )
 }
 
@@ -830,7 +830,7 @@ mod tests {
         let wrapper = wrapper("my-host");
         assert!(wrapper.contains("path:/etc/nixos"));
         assert!(wrapper.contains("nixosConfigurations.\"my-host\""));
-        assert!(wrapper.contains("/var/lib/nyet/nyet.nix"));
+        assert!(wrapper.contains("modules = [ ./nyet.nix ]"));
     }
 
     #[test]
