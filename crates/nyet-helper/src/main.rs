@@ -756,9 +756,9 @@ fn effective_uid() -> u32 {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::MetadataExt;
-        return fs::metadata("/proc/self")
+        fs::metadata("/proc/self")
             .map(|metadata| metadata.uid())
-            .unwrap_or(u32::MAX);
+            .unwrap_or(u32::MAX)
     }
     #[cfg(not(target_os = "linux"))]
     {

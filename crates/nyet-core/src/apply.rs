@@ -93,7 +93,7 @@ pub fn current_uid() -> Result<u32> {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::MetadataExt;
-        return Ok(std::fs::metadata("/proc/self")?.uid());
+        Ok(std::fs::metadata("/proc/self")?.uid())
     }
     #[cfg(not(target_os = "linux"))]
     {
