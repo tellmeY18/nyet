@@ -9,12 +9,12 @@ let
         nixosConfigurations.machine = nixpkgs.lib.nixosSystem {
           modules = [
             { nixpkgs.hostPlatform = "x86_64-linux"; }
-            ({ pkgs, lib, ... }: {
+            ({ pkgs, ... }: {
               system.stateVersion = "24.05";
               fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
               boot.loader.grub.enable = false;
               nix.settings.experimental-features = [ "nix-command" "flakes" ];
-              nix.settings.substituters = lib.mkForce [ ];
+              nix.settings.substituters = [ "https://cache.nixos.org" ];
               environment.systemPackages = [
                 (pkgs.writeShellScriptBin "nyet" "exec ${nyet}/bin/nyet $@")
                 (pkgs.writeShellScriptBin "nyet-helper" "exec ${nyet}/bin/nyet-helper $@")
@@ -31,7 +31,7 @@ in
 pkgs.testers.runNixOSTest {
   name = "nyet-apply-rollback";
   requiredFeatures.kvm = false;
-  nodes.machine = { pkgs, lib, ... }: {
+  nodes.machine = { pkgs, ... }: {
     imports = [ self.nixosModules.default ];
 
     programs.nyet.enable = true;
@@ -40,7 +40,7 @@ pkgs.testers.runNixOSTest {
     environment.systemPackages = [ pkgs.nix pkgs.nixos-rebuild ];
 
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
-    nix.settings.substituters = lib.mkForce [ ];
+    nix.settings.substituters = [ "https://cache.nixos.org" ];
 
     virtualisation = {
       memorySize = 2048;
