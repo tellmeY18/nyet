@@ -30,6 +30,7 @@ let
 in
 pkgs.testers.nixosTest {
   name = "nyet-apply-rollback";
+  requiredFeatures.kvm = false;
   nodes.machine = { pkgs, lib, ... }: {
     imports = [ self.nixosModules.default ];
 
