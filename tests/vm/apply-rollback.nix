@@ -1,6 +1,7 @@
 { pkgs, self }:
 let
   nyet = self.packages.x86_64-linux.default;
+  nyetPath = builtins.unsafeDiscardStringContext (toString nyet);
 
   baseModule = { pkgs, ... }: {
     system.stateVersion = "24.05";
@@ -11,8 +12,8 @@ let
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
     nix.settings.substituters = [ ];
     environment.systemPackages = [
-      (pkgs.writeShellScriptBin "nyet" "exec ${nyet}/bin/nyet $@")
-      (pkgs.writeShellScriptBin "nyet-helper" "exec ${nyet}/bin/nyet-helper $@")
+      (pkgs.writeShellScriptBin "nyet" "exec ${nyetPath}/bin/nyet $@")
+      (pkgs.writeShellScriptBin "nyet-helper" "exec ${nyetPath}/bin/nyet-helper $@")
       pkgs.nixos-rebuild
       pkgs.nix
     ];
