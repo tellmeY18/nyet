@@ -13,6 +13,7 @@ let
               system.stateVersion = "24.05";
               fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
               boot.loader.grub.enable = false;
+              networking.nameservers = [ "10.0.2.3" ];
               nix.settings.experimental-features = [ "nix-command" "flakes" ];
               nix.settings.substituters = [ "https://cache.nixos.org" ];
               environment.systemPackages = [
@@ -36,6 +37,7 @@ pkgs.testers.runNixOSTest {
 
     programs.nyet.enable = true;
     networking.hostName = "machine";
+    networking.nameservers = [ "10.0.2.3" ];
 
     environment.systemPackages = [ pkgs.nix pkgs.nixos-rebuild ];
 
@@ -54,6 +56,7 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("multi-user.target")
 
     machine.succeed("install -Dm644 ${flakeFile} /etc/nixos/flake.nix")
+    machine.succeed("getent hosts cache.nixos.org")
     machine.succeed("nyet --flake /etc/nixos --host machine set networking.hostName nyet-applied")
     machine.succeed("nyet --flake /etc/nixos --host machine plan --check")
     machine.succeed("nyet --flake /etc/nixos --host machine apply --yes", timeout=1800)
