@@ -80,6 +80,7 @@ Current limits:
 - The managed module must use nyet's restricted literal grammar; arbitrary Nix expressions are rejected by the helper.
 - Rollback is one step (`nh os rollback`) and restores the previous managed module, not an arbitrary generation.
 - Migration plans are not applied yet, and definition-level provenance and in-place editing are not implemented.
+- Migration planning supports classic configurations only. Nonstandard flakes and relative imports that migration cannot relocate are refused.
 - There is no package store, protocol, daemon, or GUI.
 
 See [docs/roadmap.md](docs/roadmap.md).
