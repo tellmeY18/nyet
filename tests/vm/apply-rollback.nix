@@ -28,7 +28,7 @@ let
     }
   '';
 in
-pkgs.testers.nixosTest {
+pkgs.testers.runNixOSTest {
   name = "nyet-apply-rollback";
   requiredFeatures.kvm = false;
   nodes.machine = { pkgs, lib, ... }: {
