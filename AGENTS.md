@@ -41,7 +41,7 @@ Frontends are replaceable clients. The CLI is the reference client; software sto
 
 ## Current state
 
-The implemented code is the M1 read model, the M2 intent/plan model, the managed-module MVP for M3, and the first read-only repository slice for M4. The M4 slice discovers a configuration root, parses `.nix` files with `rnix`, records imports, and renders a classic-to-standard migration plan. It does not apply edits yet. Apply and rollback are covered by a disposable NixOS VM test in CI.
+The implemented code is the M1 read model, the M2 intent/plan model, the managed-module MVP for M3, and the classic migration slice for M4/M5. The migration slice discovers a configuration root, parses `.nix` files with `rnix`, renders a classic-to-standard plan, and applies it through the helper with a snapshot and exact rollback. It does not evaluate or activate the migrated configuration. Managed-module apply and migration are covered by a disposable NixOS VM test in CI.
 
 The target architecture in this document is repository-aware editing and migration. Do not describe the parser, migration, package store, protocol, or daemon as working until they exist.
 
@@ -58,19 +58,20 @@ Implemented:
 - Deterministic managed-module rendering and line diffs.
 - Plan warnings when a selected option is also defined outside nixpkgs.
 - Candidate-module evaluation check: `nyet plan --check`.
-- CLI: `options`, `get`, `set`, `unset`, `add`, `remove`, `intents`, `plan`, `apply`, `rollback`, `history`, `scan`, and `migration-plan`.
-- Read-only repository discovery and CST parsing with `rnix`: configuration kind, host, file list, relative imports, syntax errors, standard-layout detection, and a classic migration plan.
+- CLI: `options`, `get`, `set`, `unset`, `add`, `remove`, `intents`, `plan`, `apply`, `rollback`, `history`, `scan`, `migration-plan`, `init`, and `migration-rollback`.
+- Repository discovery and CST parsing with `rnix`: configuration kind, host, file list, relative imports, syntax errors, standard-layout detection, and a classic migration plan.
+- Classic migration apply through the helper: validated relative renames, source hashes, fixed `/etc/nixos` root, fragment-free generated flake, snapshot under `/var/lib/nyet/migrations/<id>`, transaction record, and exact rollback that refuses modified files.
 - Plan staging under the user runtime directory with ownership, mode, size, expiry, and module-grammar validation in the helper.
 - Privileged helper: fixed plan ID, fixed `/etc/nixos` input, wrapper flake at `/var/lib/nyet/flake.nix`, managed module at `/var/lib/nyet/nyet.nix`, builds as the requesting user, then runs fixed `nh os switch /var/lib/nyet#<host>` as root, transaction records under `/var/lib/nyet/transactions`, and one-step rollback.
 - `packages.default`, `nixosModules.default`, and a polkit rule requiring admin authentication for `nyet-helper`.
-- 73 tests on Darwin (74 on Linux): core unit, repository scan and migration-plan tests, helper unit, fixture evaluation, golden render, and CLI integration.
+- 82 tests on Darwin (83 on Linux): core unit, repository scan, migration-plan and staging tests, helper migration and snapshot tests, fixture evaluation, golden render, and CLI integration.
 - A green x86_64-linux NixOS VM test for apply and rollback, including a non-root build path, run by GitHub Actions.
 - Nix dev shell.
 
 Not implemented:
 
 - Definition indexing, provenance correlation, and in-place edits.
-- Applying migration plans.
+- Candidate evaluation, dry-build, and automatic activation during migration.
 - In-place editing of existing definitions.
 - Package search and software-store flows.
 - Option tier metadata and the beginner-first UI model.
@@ -203,14 +204,14 @@ Target state:
 
 - Pending intents live under `$XDG_STATE_HOME/nyet` or `~/.local/state/nyet`; override with `NYET_STATE_DIR`.
 - The repository index and option cache live under `$XDG_CACHE_HOME/nyet` or `~/.cache/nyet`; override with `NYET_CACHE_DIR`.
-- Migration snapshots and transaction records live under `/var/lib/nyet` for root-owned repositories and the nyet state directory for user-owned repositories.
+- Migration snapshots live under `/var/lib/nyet/migrations/<id>` and transaction records under `/var/lib/nyet/transactions` for root-owned repositories. User-owned repository edits use the nyet state directory.
 - Apply plans are staged under `/run/user/<uid>/nyet/plans` (or `/run/nyet/plans/0` as root) with mode `0600` and a ten-minute lifetime.
 - The repository is the declarative source of truth. Nyet state contains plans, snapshots, transactions, and caches, never the effective configuration.
 
 Current MVP state:
 
 - The managed module is `/var/lib/nyet/nyet.nix`, the wrapper is `/var/lib/nyet/flake.nix`, and the previous module is `/var/lib/nyet/nyet.nix.previous`.
-- These paths are transitional and are replaced by repository edits after migration support lands.
+- These paths are transitional. Classic migration now rewrites `/etc/nixos` directly; in-place option edits still use the managed module.
 
 ## Testing
 
@@ -219,7 +220,7 @@ Tests are part of done, not a follow-up. Add them with the behavior they protect
 - Unit tests live next to the code.
 - Nix-backed tests run against fixture configurations under `tests/fixtures/`, never the developer's host.
 - Repository scanning and CST edits are tested against fixture repositories.
-- Migration tests cover flake and classic layouts, preservation of comments and definitions, idempotency, ambiguity refusal, and exact rollback.
+- Migration tests cover classic layouts, source hashes, snapshot round-trips, modified-file refusal, and exact rollback. Flake normalization tests are planned.
 - Golden tests protect rendered edits, migration output, and plan diffs.
 - Default tests do not mutate a real configuration and do not require root.
 - Linux-only NixOS VM tests are gated and run in CI.
@@ -246,12 +247,12 @@ See [docs/protocol.md](docs/protocol.md).
 
 - The engine runs as the invoking user.
 - The helper runs as root through polkit.
-- The helper has a small, auditable command set: apply a scoped repository or migration plan, run a fixed rebuild, record a transaction, roll back one generation.
+- The helper has a small, auditable command set: apply a scoped repository or migration plan, run a fixed rebuild, record a transaction, roll back one generation or one migration snapshot.
 - The helper validates plan ownership, mode, size, expiry, host, plan kind, relative paths, before-hashes, and module grammar before writing.
 - Relative edit paths are canonicalized under one fixed configuration root; traversal, symlink escapes, and unexpected file types are rejected.
 - The helper does not evaluate untrusted Nix supplied by a client and does not accept commands.
 - The engine prepares edits; it does not write root-owned paths.
-- Migration snapshots are retained until the transaction is committed and are used for exact rollback.
+- Migration snapshots are retained for explicit rollback and are removed only after a successful rollback.
 - The plan and transaction identifiers are unguessable and tied to the requesting user.
 - Build logs may contain sensitive host information; do not upload them by default.
 - Assistant proposals are untrusted input and follow the same validation and confirmation path.
@@ -266,7 +267,7 @@ See [docs/prior-art.md](docs/prior-art.md).
 
 1. Keep the repository-aware architecture documents and ADRs current.
 2. Finish repository indexing: definitions, edit ranges, provenance correlation, and ambiguity rules.
-3. Apply the migration plan atomically, with snapshots, evaluation, diffs, and rollback.
+3. Add candidate evaluation and dry-build to migration, then expand migration to nonstandard flakes.
 4. Add in-place setting edits, package-list edits, and tier metadata.
 5. Add the unprivileged engine service, `nyet-protocol`, and the first software-store client.
 6. Add the first graphical frontend after the service contract is exercised.

@@ -1,6 +1,6 @@
 # Testing
 
-Status: 73 tests on Darwin (74 on Linux) across core unit, repository scan and migration-plan tests, helper unit, fixture evaluation, golden render, and CLI integration, plus a gated x86_64-linux NixOS VM test run by CI. Definition, migration-apply, and protocol tests are planned.
+Status: 82 tests on Darwin (83 on Linux) across core unit, repository scan, migration-plan and staging tests, helper migration and snapshot tests, fixture evaluation, golden render, and CLI integration, plus a gated x86_64-linux NixOS VM test run by CI. Definition and protocol tests are planned.
 
 Tests are part of the definition of done for every milestone. They are written with the behavior they protect, not in a later cleanup pass.
 
@@ -19,14 +19,14 @@ Tests are part of the definition of done for every milestone. They are written w
 | Layer | What it protects | Where | Default run |
 |---|---|---|---|
 | Unit | Value model, path parsing, type coercion, validation, list membership, rendering, diffing, cache keys, intent store, errors | Next to the code in `nyet-core` | Yes |
-| Repository | Root discovery, file walk, import graph, syntax errors, standard-layout detection, migration-plan generation | Core unit tests with disposable trees | Yes |
+| Repository | Root discovery, file walk, import graph, syntax errors, standard-layout detection, migration-plan generation and staging | Core unit tests with disposable trees | Yes |
 | CST edits | In-place assignment edits, list insertion/removal, comment and formatting preservation, stale hash rejection | `nyet-core` plus golden files | Yes |
 | Fixture evaluation | Real option index, current values, provenance, cache writes, candidate-module check | `tests/fixtures/` | Yes, requires `nix` |
 | Golden | Exact rendered modules, repository edits, migration output, and plan diffs | `tests/golden/` | Yes |
-| Migration | Classic and flake normalization, idempotency, ambiguity refusal, evaluation, exact rollback | `tests/fixtures/repos/` and golden files | Yes |
+| Migration | Classic normalization, source hashes, snapshot round-trip, modified-file refusal, exact rollback | Core and helper unit tests with disposable trees | Yes |
 | CLI integration | Subcommands, intent persistence, JSON output, exit codes | `crates/nyet-cli/tests/` | Yes |
 | Protocol | Framing, versioning, error codes, round-trips | `nyet-protocol` (later) | Yes |
-| Helper | Module grammar, relative-path validation, hashes, plan ids, atomic writes, wrapper rendering, rebuild handoff | `nyet-helper` unit tests | Yes |
+| Helper | Module grammar, migration plan validation, relative paths, hashes, plan ids, snapshots, atomic writes, wrapper rendering, rebuild handoff | `nyet-helper` unit tests | Yes |
 | VM | Plan staging, ownership and expiry, non-root build, apply, rebuild, rollback, migration, transaction records | `tests/vm/` | No; Linux CI only |
 
 ## Fixtures

@@ -9,10 +9,13 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const PLAN_VERSION: u32 = 1;
+const MIGRATION_VERSION: u32 = 1;
 const TRANSACTION_VERSION: u32 = 1;
 const STATE_DIR: &str = "/var/lib/nyet";
+const MIGRATION_DIR: &str = "/var/lib/nyet/migrations";
 const BUILD_DIR: &str = "/run/nyet/build";
 const MODULE_PATH: &str = "/var/lib/nyet/nyet.nix";
 const MODULE_PREVIOUS: &str = "/var/lib/nyet/nyet.nix.previous";
@@ -31,6 +34,62 @@ struct PlanFile {
     created: u64,
     expires: u64,
     module: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MigrationPlanFile {
+    version: u32,
+    id: String,
+    uid: u32,
+    root: String,
+    host: String,
+    system: String,
+    nixpkgs: String,
+    created: u64,
+    expires: u64,
+    operations: Vec<MigrationRename>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MigrationRename {
+    from: String,
+    to: String,
+    sha256: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MigrationManifest {
+    version: u32,
+    id: String,
+    root: String,
+    host: String,
+    created: u64,
+    created_dirs: Vec<String>,
+    operations: Vec<ManifestOperation>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum ManifestOperation {
+    Rename {
+        from: String,
+        to: String,
+        sha256: String,
+        mode: u32,
+    },
+    Create {
+        path: String,
+        sha256: String,
+        mode: u32,
+    },
+}
+
+struct ValidatedMigration {
+    root: PathBuf,
+    host: String,
+    system: String,
+    nixpkgs: String,
+    operations: Vec<MigrationRename>,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,12 +142,36 @@ fn run() -> Result<(), String> {
             ensure_root()?;
             rollback()
         }
+        "migrate" => {
+            let id = arguments
+                .next()
+                .ok_or_else(usage)?
+                .into_string()
+                .map_err(|_| usage().to_string())?;
+            if arguments.next().is_some() {
+                return Err(usage().to_string());
+            }
+            ensure_root()?;
+            migrate(&id)
+        }
+        "migration-rollback" => {
+            let id = arguments
+                .next()
+                .ok_or_else(usage)?
+                .into_string()
+                .map_err(|_| usage().to_string())?;
+            if arguments.next().is_some() {
+                return Err(usage().to_string());
+            }
+            ensure_root()?;
+            rollback_migration(&id)
+        }
         _ => Err(usage().to_string()),
     }
 }
 
 fn usage() -> &'static str {
-    "usage: nyet-helper apply <plan-id> | nyet-helper rollback"
+    "usage: nyet-helper apply <plan-id> | nyet-helper migrate <plan-id> | nyet-helper rollback | nyet-helper migration-rollback <plan-id>"
 }
 
 fn apply(id: &str) -> Result<(), String> {
@@ -198,6 +281,542 @@ fn rollback() -> Result<(), String> {
     }
 
     result
+}
+
+fn migrate(id: &str) -> Result<(), String> {
+    if !safe_id(id) {
+        return Err("invalid plan id".to_string());
+    }
+
+    let _lock = lock()?;
+    let uid = caller_uid()?;
+    let path = plan_directory(uid).join(format!("{id}.json"));
+    let plan = read_migration_plan(&path, id, uid)?;
+    let migration = validate_migration(&plan)?;
+    let snapshot = Path::new(MIGRATION_DIR).join(id);
+    if snapshot.exists() {
+        return Err(format!("migration snapshot {id} already exists"));
+    }
+    if migration.root.join("flake.nix").exists() {
+        return Err(format!(
+            "{} already contains a flake",
+            migration.root.display()
+        ));
+    }
+
+    let started = unix_time();
+    create_migration_parent()?;
+    let manifest = match snapshot_migration(&migration, &snapshot, id, started) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&snapshot);
+            return Err(error);
+        }
+    };
+    if let Err(error) = apply_migration_operations(&migration, &manifest) {
+        let rollback = restore_migration(&manifest, &snapshot);
+        let _ = fs::remove_dir_all(&snapshot);
+        return match rollback {
+            Ok(()) => Err(error),
+            Err(restore) => Err(format!("{error}; automatic rollback failed: {restore}")),
+        };
+    }
+
+    let transaction = Transaction {
+        version: TRANSACTION_VERSION,
+        id: transaction_id(started),
+        kind: "migration",
+        plan_id: Some(plan.id.clone()),
+        uid,
+        started,
+        finished: unix_time(),
+        status: "success",
+        before: Some(snapshot.to_string_lossy().into_owned()),
+        after: None,
+        message: None,
+    };
+    if let Err(error) = write_transaction(&transaction) {
+        eprintln!("nyet-helper: warning: cannot record transaction: {error}");
+    }
+
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+fn rollback_migration(id: &str) -> Result<(), String> {
+    if !safe_id(id) {
+        return Err("invalid plan id".to_string());
+    }
+
+    let _lock = lock()?;
+    let snapshot = Path::new(MIGRATION_DIR).join(id);
+    let manifest = read_migration_manifest(&snapshot, id)?;
+    let root = fs::canonicalize(CONFIGURATION_PATH)
+        .map_err(|error| format!("cannot access {CONFIGURATION_PATH}: {error}"))?;
+    if manifest.root != root.to_string_lossy() {
+        return Err("migration snapshot does not belong to this configuration root".to_string());
+    }
+    verify_migration_current(&manifest, &root)?;
+
+    let started = unix_time();
+    restore_migration(&manifest, &snapshot)?;
+    let _ = fs::remove_dir_all(&snapshot);
+
+    let transaction = Transaction {
+        version: TRANSACTION_VERSION,
+        id: transaction_id(started),
+        kind: "migration-rollback",
+        plan_id: Some(id.to_string()),
+        uid: caller_uid()?,
+        started,
+        finished: unix_time(),
+        status: "success",
+        before: Some(snapshot.to_string_lossy().into_owned()),
+        after: None,
+        message: None,
+    };
+    if let Err(error) = write_transaction(&transaction) {
+        eprintln!("nyet-helper: warning: cannot record transaction: {error}");
+    }
+    Ok(())
+}
+
+fn read_migration_plan(path: &Path, id: &str, uid: u32) -> Result<MigrationPlanFile, String> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| format!("cannot read plan {id}: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("plan must be a regular file".to_string());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != uid {
+            return Err("plan is not owned by the authenticated user".to_string());
+        }
+        if metadata.mode() & 0o077 != 0 {
+            return Err("plan permissions are too broad".to_string());
+        }
+    }
+
+    let bytes = fs::read(path).map_err(|error| format!("cannot read plan {id}: {error}"))?;
+    if bytes.len() > MODULE_LIMIT {
+        return Err("plan is too large".to_string());
+    }
+    let plan: MigrationPlanFile =
+        serde_json::from_slice(&bytes).map_err(|error| format!("invalid plan: {error}"))?;
+    if plan.version != MIGRATION_VERSION {
+        return Err("unsupported migration plan version".to_string());
+    }
+    if plan.id != id {
+        return Err("plan id does not match".to_string());
+    }
+    if plan.uid != uid {
+        return Err("plan does not belong to the authenticated user".to_string());
+    }
+    let now = unix_time();
+    if plan.created > now.saturating_add(30) || plan.expires < now {
+        return Err("plan has expired".to_string());
+    }
+    if plan.expires < plan.created || plan.expires - plan.created > PLAN_LIFETIME {
+        return Err("plan lifetime is invalid".to_string());
+    }
+    Ok(plan)
+}
+
+fn validate_migration(plan: &MigrationPlanFile) -> Result<ValidatedMigration, String> {
+    if !safe_host(&plan.host) {
+        return Err("invalid host in plan".to_string());
+    }
+    if !safe_system(&plan.system) {
+        return Err("invalid system in plan".to_string());
+    }
+    if !safe_nixpkgs(&plan.nixpkgs) {
+        return Err("unsupported nixpkgs input in plan".to_string());
+    }
+
+    let root = fs::canonicalize(&plan.root)
+        .map_err(|error| format!("cannot access {}: {error}", plan.root))?;
+    let expected = fs::canonicalize(CONFIGURATION_PATH)
+        .map_err(|error| format!("cannot access {CONFIGURATION_PATH}: {error}"))?;
+    if root != expected {
+        return Err(format!("migration is restricted to {CONFIGURATION_PATH}"));
+    }
+    if !root.is_dir() {
+        return Err("configuration root is not a directory".to_string());
+    }
+
+    let configuration_to = format!("hosts/{}/configuration.nix", plan.host);
+    let hardware_to = format!("hosts/{}/hardware-configuration.nix", plan.host);
+    let mut configuration = false;
+    let mut hardware = false;
+    for operation in &plan.operations {
+        if !safe_relative(&operation.from) || !safe_relative(&operation.to) {
+            return Err("migration contains an unsafe path".to_string());
+        }
+        if !safe_hash(&operation.sha256) {
+            return Err("migration contains an invalid source hash".to_string());
+        }
+        if operation.from == "configuration.nix" && operation.to == configuration_to {
+            if configuration {
+                return Err("migration repeats configuration.nix".to_string());
+            }
+            configuration = true;
+        } else if operation.from == "hardware-configuration.nix" && operation.to == hardware_to {
+            if hardware {
+                return Err("migration repeats hardware-configuration.nix".to_string());
+            }
+            hardware = true;
+        } else {
+            return Err(format!(
+                "migration may only move configuration.nix and hardware-configuration.nix, not {}",
+                operation.from
+            ));
+        }
+
+        let source = root.join(&operation.from);
+        let metadata = fs::symlink_metadata(&source)
+            .map_err(|error| format!("cannot inspect {}: {error}", operation.from))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!("{} must be a regular file", operation.from));
+        }
+        if sha256_file(&source)? != operation.sha256 {
+            return Err(format!(
+                "{} changed after the plan was made",
+                operation.from
+            ));
+        }
+        if root.join(&operation.to).exists() {
+            return Err(format!(
+                "migration destination {} already exists",
+                operation.to
+            ));
+        }
+        ensure_parent_chain(&root, &operation.to)?;
+    }
+    if !configuration {
+        return Err("migration must move configuration.nix".to_string());
+    }
+    if root.join("flake.nix").exists() {
+        return Err(format!("{} already contains a flake", root.display()));
+    }
+    ensure_parent_chain(&root, "flake.nix")?;
+
+    Ok(ValidatedMigration {
+        root,
+        host: plan.host.clone(),
+        system: plan.system.clone(),
+        nixpkgs: plan.nixpkgs.clone(),
+        operations: plan.operations.clone(),
+    })
+}
+
+fn ensure_parent_chain(root: &Path, relative: &str) -> Result<(), String> {
+    let parts: Vec<&str> = relative.split('/').collect();
+    let mut path = root.to_path_buf();
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        path.push(part);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(format!("{} is not a real directory", path.display()));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(format!("cannot inspect {}: {error}", path.display())),
+        }
+    }
+    Ok(())
+}
+
+fn snapshot_migration(
+    migration: &ValidatedMigration,
+    snapshot: &Path,
+    id: &str,
+    created: u64,
+) -> Result<MigrationManifest, String> {
+    fs::create_dir(snapshot)
+        .map_err(|error| format!("cannot create snapshot {}: {error}", snapshot.display()))?;
+    fs::set_permissions(snapshot, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("cannot secure {}: {error}", snapshot.display()))?;
+
+    let mut created_dirs = Vec::new();
+    for operation in &migration.operations {
+        let mut path = migration.root.clone();
+        let parts: Vec<&str> = operation.to.split('/').collect();
+        for part in &parts[..parts.len().saturating_sub(1)] {
+            path.push(part);
+            let relative = path
+                .strip_prefix(&migration.root)
+                .map_err(|_| "migration path escaped its root".to_string())?
+                .to_string_lossy()
+                .into_owned();
+            if !path.exists() && !created_dirs.contains(&relative) {
+                created_dirs.push(relative);
+            }
+        }
+    }
+
+    let mut operations = Vec::new();
+    for operation in &migration.operations {
+        let source = migration.root.join(&operation.from);
+        let metadata = fs::symlink_metadata(&source)
+            .map_err(|error| format!("cannot inspect {}: {error}", operation.from))?;
+        let mode = metadata.permissions().mode() & 0o7777;
+        let destination = snapshot.join("files").join(&operation.from);
+        let parent = destination
+            .parent()
+            .ok_or_else(|| "snapshot path has no parent".to_string())?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        fs::copy(&source, &destination)
+            .map_err(|error| format!("cannot snapshot {}: {error}", operation.from))?;
+        fs::set_permissions(&destination, fs::Permissions::from_mode(mode))
+            .map_err(|error| format!("cannot set snapshot permissions: {error}"))?;
+        operations.push(ManifestOperation::Rename {
+            from: operation.from.clone(),
+            to: operation.to.clone(),
+            sha256: operation.sha256.clone(),
+            mode,
+        });
+    }
+
+    let flake = flake_contents(&migration.host, &migration.system, &migration.nixpkgs);
+    operations.push(ManifestOperation::Create {
+        path: "flake.nix".to_string(),
+        sha256: sha256_bytes(flake.as_bytes()),
+        mode: 0o644,
+    });
+
+    let manifest = MigrationManifest {
+        version: MIGRATION_VERSION,
+        id: id.to_string(),
+        root: migration.root.to_string_lossy().into_owned(),
+        host: migration.host.clone(),
+        created,
+        created_dirs,
+        operations,
+    };
+    let bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| format!("cannot serialize snapshot: {error}"))?;
+    write_atomic(&snapshot.join("manifest.json"), &bytes, 0o600)?;
+    Ok(manifest)
+}
+
+fn create_migration_parent() -> Result<(), String> {
+    let directory = Path::new(MIGRATION_DIR);
+    fs::create_dir_all(directory)
+        .map_err(|error| format!("cannot create {}: {error}", directory.display()))?;
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("cannot secure {}: {error}", directory.display()))
+}
+
+fn apply_migration_operations(
+    migration: &ValidatedMigration,
+    manifest: &MigrationManifest,
+) -> Result<(), String> {
+    for directory in &manifest.created_dirs {
+        let path = migration.root.join(directory);
+        fs::create_dir(&path)
+            .map_err(|error| format!("cannot create {}: {error}", path.display()))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+            .map_err(|error| format!("cannot set permissions on {}: {error}", path.display()))?;
+    }
+
+    for operation in &manifest.operations {
+        match operation {
+            ManifestOperation::Rename {
+                from, to, sha256, ..
+            } => {
+                let source = migration.root.join(from);
+                let destination = migration.root.join(to);
+                fs::rename(&source, &destination)
+                    .map_err(|error| format!("cannot move {from} to {to}: {error}"))?;
+                if sha256_file(&destination)? != *sha256 {
+                    return Err(format!("{to} changed while it was moved"));
+                }
+            }
+            ManifestOperation::Create { path, sha256, .. } => {
+                let flake = flake_contents(&migration.host, &migration.system, &migration.nixpkgs);
+                write_atomic(&migration.root.join(path), flake.as_bytes(), 0o644)?;
+                if sha256_file(&migration.root.join(path))? != *sha256 {
+                    return Err(format!("{path} was not written correctly"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn restore_migration(manifest: &MigrationManifest, snapshot: &Path) -> Result<(), String> {
+    for operation in manifest.operations.iter().rev() {
+        match operation {
+            ManifestOperation::Create { path, .. } => {
+                let target = Path::new(&manifest.root).join(path);
+                match fs::remove_file(&target) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!("cannot remove {}: {error}", target.display()))
+                    }
+                }
+            }
+            ManifestOperation::Rename { from, to, mode, .. } => {
+                let target = Path::new(&manifest.root).join(to);
+                if target.exists() {
+                    fs::remove_file(&target)
+                        .map_err(|error| format!("cannot remove {}: {error}", target.display()))?;
+                }
+                let original = snapshot.join("files").join(from);
+                let bytes = fs::read(&original)
+                    .map_err(|error| format!("cannot read snapshot for {from}: {error}"))?;
+                write_atomic(&Path::new(&manifest.root).join(from), &bytes, *mode)?;
+            }
+        }
+    }
+
+    for directory in manifest.created_dirs.iter().rev() {
+        let path = Path::new(&manifest.root).join(directory);
+        let _ = fs::remove_dir(path);
+    }
+    Ok(())
+}
+
+fn verify_migration_current(manifest: &MigrationManifest, root: &Path) -> Result<(), String> {
+    for operation in &manifest.operations {
+        match operation {
+            ManifestOperation::Rename {
+                from, to, sha256, ..
+            } => {
+                if root.join(from).exists() {
+                    return Err(format!("{from} already exists; refusing to overwrite it"));
+                }
+                let path = root.join(to);
+                let metadata = fs::symlink_metadata(&path)
+                    .map_err(|error| format!("cannot inspect {to}: {error}"))?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(format!("{to} is not a regular file"));
+                }
+                if sha256_file(&path)? != *sha256 {
+                    return Err(format!("{to} was modified after migration"));
+                }
+            }
+            ManifestOperation::Create { path, sha256, .. } => {
+                let target = root.join(path);
+                let metadata = fs::symlink_metadata(&target)
+                    .map_err(|error| format!("cannot inspect {path}: {error}"))?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(format!("{path} is not a regular file"));
+                }
+                if sha256_file(&target)? != *sha256 {
+                    return Err(format!("{path} was modified after migration"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_migration_manifest(snapshot: &Path, id: &str) -> Result<MigrationManifest, String> {
+    let path = snapshot.join("manifest.json");
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| format!("cannot read migration snapshot {id}: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("migration snapshot is not a regular file".to_string());
+    }
+    let bytes =
+        fs::read(&path).map_err(|error| format!("cannot read migration snapshot {id}: {error}"))?;
+    let manifest: MigrationManifest =
+        serde_json::from_slice(&bytes).map_err(|error| format!("invalid snapshot: {error}"))?;
+    if manifest.version != MIGRATION_VERSION || manifest.id != id {
+        return Err("invalid migration snapshot".to_string());
+    }
+    Ok(manifest)
+}
+
+fn flake_contents(host: &str, system: &str, nixpkgs: &str) -> String {
+    format!(
+        r#"{{
+  description = "NixOS configuration for {host}";
+
+  inputs.nixpkgs.url = "{nixpkgs}";
+
+  outputs = {{ self, nixpkgs }}: {{
+    nixosConfigurations."{host}" = nixpkgs.lib.nixosSystem {{
+      system = "{system}";
+      modules = [ ./hosts/{host}/configuration.nix ];
+    }};
+  }};
+}}
+"#
+    )
+}
+
+fn safe_relative(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 512
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn safe_system(system: &str) -> bool {
+    !system.is_empty()
+        && system.len() <= 64
+        && system
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
+fn safe_nixpkgs(url: &str) -> bool {
+    if let Some(branch) = url.strip_prefix("github:NixOS/nixpkgs/") {
+        return !branch.is_empty()
+            && branch.len() <= 128
+            && branch.split('/').all(|part| {
+                !part.is_empty()
+                    && part != "."
+                    && part != ".."
+                    && part.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+                    })
+            });
+    }
+    if let Some(path) = url.strip_prefix("path:/nix/") {
+        return !path.is_empty()
+            && path.len() <= 256
+            && path.split('/').all(|part| {
+                !part.is_empty()
+                    && part != "."
+                    && part != ".."
+                    && part.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+                    })
+            });
+    }
+    false
+}
+
+fn safe_hash(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .chars()
+            .all(|character| matches!(character, '0'..='9' | 'a'..='f'))
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    Ok(sha256_bytes(&bytes))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut text = String::with_capacity(64);
+    for byte in digest {
+        text.push_str(&format!("{byte:02x}"));
+    }
+    text
 }
 
 fn lock() -> Result<fs::File, String> {
@@ -913,6 +1532,113 @@ mod tests {
 
     fn module(body: &str) -> String {
         format!("{HEADER}{{\n{body}}}\n")
+    }
+
+    #[test]
+    fn restricts_migration_inputs() {
+        assert!(safe_relative("hosts/phone/configuration.nix"));
+        assert!(!safe_relative("../configuration.nix"));
+        assert!(!safe_relative("/etc/passwd"));
+        assert!(!safe_relative("hosts//configuration.nix"));
+        assert!(safe_system("x86_64-linux"));
+        assert!(!safe_system("x86_64-linux; reboot"));
+        assert!(safe_nixpkgs("github:NixOS/nixpkgs/nixos-unstable"));
+        assert!(safe_nixpkgs(
+            "path:/nix/var/nix/profiles/per-user/root/channels/nixos"
+        ));
+        assert!(!safe_nixpkgs("path:/etc/passwd"));
+        assert!(!safe_nixpkgs("github:NixOS/nixpkgs/../../secret"));
+        assert!(safe_hash(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!safe_hash("abc"));
+    }
+
+    #[test]
+    fn migration_snapshot_round_trip() {
+        let directory = temporary_directory("migration");
+        let root = directory.join("root");
+        fs::create_dir(&root).unwrap();
+        let configuration = "{ ... }: { imports = [ ./hardware-configuration.nix ]; }";
+        let hardware = "{ ... }: { }";
+        fs::write(root.join("configuration.nix"), configuration).unwrap();
+        fs::write(root.join("hardware-configuration.nix"), hardware).unwrap();
+
+        let migration = ValidatedMigration {
+            root: root.clone(),
+            host: "machine".to_string(),
+            system: "x86_64-linux".to_string(),
+            nixpkgs: "github:NixOS/nixpkgs/nixos-unstable".to_string(),
+            operations: vec![
+                MigrationRename {
+                    from: "configuration.nix".to_string(),
+                    to: "hosts/machine/configuration.nix".to_string(),
+                    sha256: sha256_bytes(configuration.as_bytes()),
+                },
+                MigrationRename {
+                    from: "hardware-configuration.nix".to_string(),
+                    to: "hosts/machine/hardware-configuration.nix".to_string(),
+                    sha256: sha256_bytes(hardware.as_bytes()),
+                },
+            ],
+        };
+        let snapshot = directory.join("snapshot");
+        let manifest = snapshot_migration(&migration, &snapshot, "id", 1).unwrap();
+        assert_eq!(manifest.created_dirs, ["hosts", "hosts/machine"]);
+
+        apply_migration_operations(&migration, &manifest).unwrap();
+        assert!(!root.join("configuration.nix").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("hosts/machine/configuration.nix")).unwrap(),
+            configuration
+        );
+        assert!(root.join("flake.nix").is_file());
+        verify_migration_current(&manifest, &root).unwrap();
+
+        restore_migration(&manifest, &snapshot).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("configuration.nix")).unwrap(),
+            configuration
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("hardware-configuration.nix")).unwrap(),
+            hardware
+        );
+        assert!(!root.join("flake.nix").exists());
+        assert!(!root.join("hosts").exists());
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn refuses_to_roll_back_modified_migration_files() {
+        let directory = temporary_directory("migration-modified");
+        let root = directory.join("root");
+        fs::create_dir(&root).unwrap();
+        let configuration = "{ ... }: { }";
+        fs::write(root.join("configuration.nix"), configuration).unwrap();
+        let migration = ValidatedMigration {
+            root: root.clone(),
+            host: "machine".to_string(),
+            system: "x86_64-linux".to_string(),
+            nixpkgs: "github:NixOS/nixpkgs/nixos-unstable".to_string(),
+            operations: vec![MigrationRename {
+                from: "configuration.nix".to_string(),
+                to: "hosts/machine/configuration.nix".to_string(),
+                sha256: sha256_bytes(configuration.as_bytes()),
+            }],
+        };
+        let snapshot = directory.join("snapshot");
+        let manifest = snapshot_migration(&migration, &snapshot, "id", 1).unwrap();
+        apply_migration_operations(&migration, &manifest).unwrap();
+        fs::write(
+            root.join("hosts/machine/configuration.nix"),
+            "{ ... }: { boot = 1; }",
+        )
+        .unwrap();
+
+        assert!(verify_migration_current(&manifest, &root).is_err());
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]

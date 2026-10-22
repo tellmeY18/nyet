@@ -27,7 +27,11 @@ pub use option::{OptionSpec, OptionView};
 pub use path::OptionPath;
 pub use plan::{build_plan, Plan};
 pub use render::{render_module, unified_diff};
-pub use repo::{migration_plan, scan, FileOperation, MigrationPlan, Repo, RepoFile, RepoKind};
+pub use repo::{
+    migration_plan, migration_plan_with_nixpkgs, safe_nixpkgs, safe_relative, scan, sha256_bytes,
+    sha256_file, stage_migration, FileOperation, MigrationPlan, MigrationPlanFile, MigrationRename,
+    Repo, RepoFile, RepoKind, DEFAULT_NIXPKGS, MIGRATION_PLAN_VERSION,
+};
 pub use store::{default_state_dir, IntentStore};
 pub use transaction::{history, Transaction};
 pub use validate::{validate, Warning};

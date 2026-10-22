@@ -58,6 +58,37 @@ let
     }
   '';
 
+  classicConfiguration = pkgs.writeText "classic-configuration.nix" ''
+    { pkgs, ... }:
+    {
+      imports = [
+        ./hardware-configuration.nix
+        (import "${nixpkgsPath}/nixos/lib/testing/nixos-test-base.nix")
+        (import "${nixpkgsPath}/nixos/modules/virtualisation/qemu-vm.nix")
+      ];
+      system.stateVersion = "24.05";
+      system.switch.enable = true;
+      virtualisation.host.pkgs = pkgs;
+      fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
+      boot.loader.grub.enable = false;
+      nix.settings.experimental-features = [ "nix-command" "flakes" ];
+      nix.settings.substituters = [ ];
+      environment.systemPackages = [
+        (pkgs.writeShellScriptBin "nyet" "exec ${nyet}/bin/nyet $@")
+        (pkgs.writeShellScriptBin "nyet-helper" "exec ${nyet}/bin/nyet-helper $@")
+        pkgs.nixos-rebuild
+        pkgs.nix
+        pkgs.nh
+      ];
+      networking.hostName = "nyet-applied";
+    }
+  '';
+
+  classicHardware = pkgs.writeText "classic-hardware.nix" ''
+    { ... }:
+    { }
+  '';
+
   target = self.inputs.nixpkgs.lib.nixosSystem {
     modules = [
       { nixpkgs.hostPlatform = "x86_64-linux"; }
@@ -88,6 +119,8 @@ pkgs.testers.runNixOSTest {
       cores = 2;
       additionalPaths = [
         flakeFile
+        classicConfiguration
+        classicHardware
         nyet
         nixpkgsPath
         pkgs.path
@@ -103,6 +136,29 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     start_all()
     machine.wait_for_unit("multi-user.target")
+
+    machine.succeed("install -d /etc/nixos")
+    machine.succeed("install -Dm644 ${classicConfiguration} /etc/nixos/configuration.nix")
+    machine.succeed("install -Dm644 ${classicHardware} /etc/nixos/hardware-configuration.nix")
+    machine.succeed("nyet --flake /etc/nixos --host machine migration-plan --system x86_64-linux --nixpkgs path:${nixpkgsPath}")
+    machine.succeed("nyet --flake /etc/nixos --host machine init --system x86_64-linux --nixpkgs path:${nixpkgsPath} --yes", timeout=1800)
+    machine.succeed("test -f /etc/nixos/hosts/machine/configuration.nix")
+    machine.succeed("test -f /etc/nixos/hosts/machine/hardware-configuration.nix")
+    machine.succeed("test -f /etc/nixos/flake.nix")
+    machine.succeed("grep -q 'url = "path:${nixpkgsPath}"' /etc/nixos/flake.nix")
+    machine.succeed("test ! -e /etc/nixos/configuration.nix")
+    machine.succeed("nix build --no-link --no-write-lock-file /etc/nixos#machine.config.system.build.toplevel", timeout=1800)
+
+    import json
+    history = json.loads(machine.succeed("nyet history --json"))
+    migrations = [entry for entry in history if entry["kind"] == "migration"]
+    snapshot = migrations[-1]["plan_id"]
+    machine.succeed(f"nyet migration-rollback {snapshot} --yes", timeout=1800)
+    machine.succeed("test -f /etc/nixos/configuration.nix")
+    machine.succeed("test -f /etc/nixos/hardware-configuration.nix")
+    machine.succeed("test ! -e /etc/nixos/flake.nix")
+    machine.succeed("test ! -e /etc/nixos/flake.lock")
+    machine.succeed("test ! -e /etc/nixos/hosts")
 
     machine.succeed("install -Dm644 ${flakeFile} /etc/nixos/flake.nix")
     machine.succeed("nyet --flake /etc/nixos --host machine set networking.hostName nyet-applied")

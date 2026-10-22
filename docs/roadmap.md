@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: draft. M0, the POC vertical slice, M1, M2, and the M3 managed-module MVP are complete. M4 has started with read-only repository scan and a classic migration plan; migration apply and in-place editing are next.
+Status: draft. M0, the POC vertical slice, M1, M2, and the M3 managed-module MVP are complete. M4 has repository scan, import/error indexing, and standard-layout detection. M5 has classic migration planning, apply, snapshots, and exact rollback. Definition indexing and candidate evaluation are next.
 
 The order is intentional. Do not build graphical clients before the repository model, migration, and edit paths are proven through the CLI. Tests are part of done for every milestone.
 
@@ -67,9 +67,11 @@ A disposable NixOS VM test applies a hostname change, rolls it back, and applies
 - Add `nyet scan` and machine-readable output.
 - Cache by repository fingerprint, host, and schema version.
 
+Done so far: file walk, relative import collection, syntax errors, configuration kind, host argument, standard-layout detection, and cached option evaluation.
+
 Done when a fixture repository, including one that does not use the standard layout, can be scanned without mutation, and every definition site is either editable or explicitly rejected.
 
-## M5: Standard layout and migration — plan started
+## M5: Standard layout and migration — in progress
 
 - Define the canonical layout.
 - Detect flake, classic, and mixed repositories.
@@ -78,6 +80,8 @@ Done when a fixture repository, including one that does not use the standard lay
 - Show the complete diff and require confirmation.
 - Apply atomically; record an exact rollback snapshot.
 - Add `nyet init`.
+
+Done so far: classic-to-standard plan, source hashes, helper apply, snapshot under `/var/lib/nyet/migrations`, transaction record, exact migration rollback, and `nyet init`. Candidate evaluation, unified diffs, and nonstandard-flake migration remain.
 
 Done when a classic configuration and an unnormalized flake can be migrated without semantic changes, idempotently, with exact rollback on failure.
 

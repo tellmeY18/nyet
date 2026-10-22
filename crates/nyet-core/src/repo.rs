@@ -1,16 +1,22 @@
 use std::collections::BTreeSet;
 use std::fs;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use rnix::{Root, SyntaxKind};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
+use crate::apply::{plan_directory, random_id, unix_time};
 use crate::{Error, Result};
 
 const SKIP_DIRS: &[&str] = &[".git", ".direnv", "node_modules", "result", "target"];
 const CONFIGURATION: &str = "configuration.nix";
 const HARDWARE: &str = "hardware-configuration.nix";
 const FLAKE: &str = "flake.nix";
+pub const MIGRATION_PLAN_VERSION: u32 = 1;
+pub const MIGRATION_PLAN_TTL_SECONDS: u64 = 600;
+pub const DEFAULT_NIXPKGS: &str = "github:NixOS/nixpkgs/nixos-unstable";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -50,8 +56,30 @@ pub struct MigrationPlan {
     pub kind: RepoKind,
     pub host: String,
     pub system: String,
+    pub nixpkgs: String,
     pub operations: Vec<FileOperation>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrationRename {
+    pub from: String,
+    pub to: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrationPlanFile {
+    pub version: u32,
+    pub id: String,
+    pub uid: u32,
+    pub root: String,
+    pub host: String,
+    pub system: String,
+    pub nixpkgs: String,
+    pub created: u64,
+    pub expires: u64,
+    pub operations: Vec<MigrationRename>,
 }
 
 impl MigrationPlan {
@@ -130,12 +158,22 @@ pub fn scan(root: impl AsRef<Path>, host: Option<&str>) -> Result<Repo> {
 }
 
 pub fn migration_plan(repo: &Repo, host: &str, system: &str) -> Result<MigrationPlan> {
+    migration_plan_with_nixpkgs(repo, host, system, DEFAULT_NIXPKGS)
+}
+
+pub fn migration_plan_with_nixpkgs(
+    repo: &Repo,
+    host: &str,
+    system: &str,
+    nixpkgs: &str,
+) -> Result<MigrationPlan> {
     if repo.standard {
         return Ok(MigrationPlan {
             root: repo.root.clone(),
             kind: repo.kind,
             host: host.to_string(),
             system: system.to_string(),
+            nixpkgs: nixpkgs.to_string(),
             operations: Vec::new(),
             warnings: Vec::new(),
         });
@@ -151,9 +189,14 @@ pub fn migration_plan(repo: &Repo, host: &str, system: &str) -> Result<Migration
             "{system:?} is not a safe Nix system name"
         )));
     }
+    if !safe_nixpkgs(nixpkgs) {
+        return Err(Error::Usage(format!(
+            "{nixpkgs:?} is not a supported nixpkgs flake input"
+        )));
+    }
 
     match repo.kind {
-        RepoKind::Classic => classic_plan(repo, host, system),
+        RepoKind::Classic => classic_plan(repo, host, system, nixpkgs),
         RepoKind::Flake => Err(Error::Usage(
             "this flake is not in the standard layout; flake migration is not implemented yet"
                 .to_string(),
@@ -161,7 +204,7 @@ pub fn migration_plan(repo: &Repo, host: &str, system: &str) -> Result<Migration
     }
 }
 
-fn classic_plan(repo: &Repo, host: &str, system: &str) -> Result<MigrationPlan> {
+fn classic_plan(repo: &Repo, host: &str, system: &str, nixpkgs: &str) -> Result<MigrationPlan> {
     let configuration = repo.root.join(CONFIGURATION);
     if !configuration.is_file() {
         return Err(Error::Usage(format!(
@@ -212,7 +255,7 @@ fn classic_plan(repo: &Repo, host: &str, system: &str) -> Result<MigrationPlan> 
 
     operations.push(FileOperation::Create {
         path: FLAKE.to_string(),
-        contents: flake_text(host, system),
+        contents: flake_text(host, system, nixpkgs),
     });
 
     Ok(MigrationPlan {
@@ -220,17 +263,18 @@ fn classic_plan(repo: &Repo, host: &str, system: &str) -> Result<MigrationPlan> 
         kind: repo.kind,
         host: host.to_string(),
         system: system.to_string(),
+        nixpkgs: nixpkgs.to_string(),
         operations,
         warnings,
     })
 }
 
-fn flake_text(host: &str, system: &str) -> String {
+fn flake_text(host: &str, system: &str, nixpkgs: &str) -> String {
     format!(
         r#"{{
   description = "NixOS configuration for {host}";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.nixpkgs.url = "{nixpkgs}";
 
   outputs = {{ self, nixpkgs }}: {{
     nixosConfigurations."{host}" = nixpkgs.lib.nixosSystem {{
@@ -297,6 +341,175 @@ fn walk(
         });
     }
     Ok(())
+}
+
+pub fn stage_migration(plan: &MigrationPlan) -> Result<crate::apply::StagedPlan> {
+    let uid = crate::current_uid()?;
+    let now = unix_time()?;
+    stage_migration_in(plan, &plan_directory(uid), uid, now)
+}
+
+pub(crate) fn stage_migration_in(
+    plan: &MigrationPlan,
+    directory: &Path,
+    uid: u32,
+    now: u64,
+) -> Result<crate::apply::StagedPlan> {
+    if plan.operations.is_empty() {
+        return Err(Error::Usage(
+            "the repository is already in the standard layout".to_string(),
+        ));
+    }
+    if !safe_host(&plan.host) {
+        return Err(Error::Usage(format!(
+            "{:?} is not a safe host name",
+            plan.host
+        )));
+    }
+    if !safe_system(&plan.system) {
+        return Err(Error::Usage(format!(
+            "{:?} is not a safe Nix system name",
+            plan.system
+        )));
+    }
+    if !safe_nixpkgs(&plan.nixpkgs) {
+        return Err(Error::Usage(format!(
+            "{:?} is not a supported nixpkgs flake input",
+            plan.nixpkgs
+        )));
+    }
+
+    let root = fs::canonicalize(&plan.root)?;
+    if !root.is_dir() {
+        return Err(Error::Usage(format!(
+            "{} is not a configuration directory",
+            root.display()
+        )));
+    }
+
+    let mut renames = Vec::new();
+    let mut creates = Vec::new();
+    for operation in &plan.operations {
+        match operation {
+            FileOperation::Create { path, .. } => creates.push(path.clone()),
+            FileOperation::Rename { from, to } => {
+                if !safe_relative(from) || !safe_relative(to) {
+                    return Err(Error::Usage(format!(
+                        "unsafe migration path {from:?} -> {to:?}"
+                    )));
+                }
+                let source = root.join(from);
+                let metadata = fs::symlink_metadata(&source)
+                    .map_err(|error| Error::Usage(format!("cannot inspect {from}: {error}")))?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(Error::Usage(format!("{from} must be a regular file")));
+                }
+                if root.join(to).exists() {
+                    return Err(Error::Usage(format!(
+                        "migration destination {to} already exists"
+                    )));
+                }
+                renames.push(MigrationRename {
+                    from: from.clone(),
+                    to: to.clone(),
+                    sha256: sha256_file(&source)?,
+                });
+            }
+        }
+    }
+    if creates.len() != 1 || creates[0] != FLAKE {
+        return Err(Error::Usage(
+            "a migration plan must create only flake.nix".to_string(),
+        ));
+    }
+    if root.join(FLAKE).exists() {
+        return Err(Error::Usage(format!(
+            "{} already has a {FLAKE}",
+            root.display()
+        )));
+    }
+
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(directory)?;
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+
+    let id = random_id()?;
+    let file = MigrationPlanFile {
+        version: MIGRATION_PLAN_VERSION,
+        id: id.clone(),
+        uid,
+        root: root.to_string_lossy().into_owned(),
+        host: plan.host.clone(),
+        system: plan.system.clone(),
+        nixpkgs: plan.nixpkgs.clone(),
+        created: now,
+        expires: now.saturating_add(MIGRATION_PLAN_TTL_SECONDS),
+        operations: renames,
+    };
+    let path = directory.join(format!("{id}.json"));
+    let mut handle = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    use std::io::Write;
+    handle.write_all(&serde_json::to_vec(&file)?)?;
+    handle.sync_all()?;
+    Ok(crate::apply::StagedPlan { id, path })
+}
+
+pub fn sha256_file(path: &Path) -> Result<String> {
+    let bytes = fs::read(path)?;
+    Ok(sha256_bytes(&bytes))
+}
+
+pub fn sha256_bytes(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut text = String::with_capacity(64);
+    for byte in digest {
+        text.push_str(&format!("{byte:02x}"));
+    }
+    text
+}
+
+pub fn safe_relative(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 512
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+pub fn safe_nixpkgs(url: &str) -> bool {
+    if let Some(branch) = url.strip_prefix("github:NixOS/nixpkgs/") {
+        return !branch.is_empty()
+            && branch.len() <= 128
+            && branch.split('/').all(|part| {
+                !part.is_empty()
+                    && part != "."
+                    && part != ".."
+                    && part.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+                    })
+            });
+    }
+    if let Some(path) = url.strip_prefix("path:/nix/") {
+        return !path.is_empty()
+            && path.len() <= 256
+            && path.split('/').all(|part| {
+                !part.is_empty()
+                    && part != "."
+                    && part != ".."
+                    && part.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+                    })
+            });
+    }
+    false
 }
 
 fn safe_host(host: &str) -> bool {
@@ -404,6 +617,75 @@ mod tests {
         let repo = scan(dir.path(), Some("phone")).unwrap();
         let error = migration_plan(&repo, "phone", "x86_64-linux").unwrap_err();
         assert!(error.to_string().contains("./modules/desktop.nix"));
+    }
+
+    #[test]
+    fn stages_a_migration_plan_with_source_hashes() {
+        let dir = tempdir().unwrap();
+        let configuration = "{ ... }: { imports = [ ./hardware-configuration.nix ]; }";
+        let hardware = "{ ... }: { }";
+        write(&dir.path().join(CONFIGURATION), configuration);
+        write(&dir.path().join(HARDWARE), hardware);
+
+        let repo = scan(dir.path(), Some("phone")).unwrap();
+        let plan = migration_plan(&repo, "phone", "x86_64-linux").unwrap();
+        assert_eq!(plan.nixpkgs, DEFAULT_NIXPKGS);
+        let staging = tempdir().unwrap();
+        let staged = stage_migration_in(&plan, staging.path(), 1000, 100).unwrap();
+
+        let bytes = fs::read(&staged.path).unwrap();
+        let file: MigrationPlanFile = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(file.version, MIGRATION_PLAN_VERSION);
+        assert_eq!(file.uid, 1000);
+        assert_eq!(file.host, "phone");
+        assert_eq!(file.system, "x86_64-linux");
+        assert_eq!(file.created, 100);
+        assert_eq!(file.expires, 100 + MIGRATION_PLAN_TTL_SECONDS);
+        assert_eq!(file.operations.len(), 2);
+        assert_eq!(file.operations[0].from, CONFIGURATION);
+        assert_eq!(file.operations[0].to, "hosts/phone/configuration.nix");
+        assert_eq!(
+            file.operations[0].sha256,
+            sha256_bytes(configuration.as_bytes())
+        );
+        assert_eq!(file.operations[1].sha256, sha256_bytes(hardware.as_bytes()));
+
+        let mode = fs::metadata(&staged.path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn supports_a_local_channel_input() {
+        let dir = tempdir().unwrap();
+        write(&dir.path().join(CONFIGURATION), "{ ... }: { }");
+        let repo = scan(dir.path(), Some("phone")).unwrap();
+        let nixpkgs = "path:/nix/var/nix/profiles/per-user/root/channels/nixos";
+        let plan = migration_plan_with_nixpkgs(&repo, "phone", "x86_64-linux", nixpkgs).unwrap();
+        assert_eq!(plan.nixpkgs, nixpkgs);
+        assert!(plan.operations.iter().any(|operation| matches!(
+            operation,
+            FileOperation::Create { path, contents }
+                if path == FLAKE && contents.contains(nixpkgs)
+        )));
+        assert!(safe_nixpkgs(nixpkgs));
+        assert!(!safe_nixpkgs("path:/etc/passwd"));
+        assert!(!safe_nixpkgs("github:NixOS/nixpkgs/../../secret"));
+    }
+
+    #[test]
+    fn refuses_to_stage_over_an_existing_destination() {
+        let dir = tempdir().unwrap();
+        write(&dir.path().join(CONFIGURATION), "{ ... }: { }");
+        let repo = scan(dir.path(), Some("phone")).unwrap();
+        let plan = migration_plan(&repo, "phone", "x86_64-linux").unwrap();
+        write(
+            &dir.path().join("hosts/phone/configuration.nix"),
+            "{ ... }: { }",
+        );
+
+        let staging = tempdir().unwrap();
+        let error = stage_migration_in(&plan, staging.path(), 1000, 100).unwrap_err();
+        assert!(error.to_string().contains("already exists"));
     }
 
     #[test]

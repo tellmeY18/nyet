@@ -410,3 +410,64 @@ fn renders_a_classic_migration_plan_without_writing() {
         }));
     assert!(!repo.join("flake.nix").exists());
 }
+
+#[test]
+fn accepts_an_explicit_migration_nixpkgs_input() {
+    let repo = temporary_directory("classic-migration-nixpkgs");
+    std::fs::write(repo.join("configuration.nix"), "{ ... }: { }").unwrap();
+    let flake = repo.display().to_string();
+
+    let output = nyet(&[
+        "--flake",
+        &flake,
+        "--host",
+        "phone",
+        "--json",
+        "migration-plan",
+        "--system",
+        "x86_64-linux",
+        "--nixpkgs",
+        "path:/nix/store/00000000000000000000000000000000-source",
+    ]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(
+        value["nixpkgs"],
+        serde_json::json!("path:/nix/store/00000000000000000000000000000000-source")
+    );
+}
+
+#[test]
+fn init_refuses_a_nonstandard_root() {
+    let repo = temporary_directory("init-refused");
+    std::fs::write(repo.join("configuration.nix"), "{ ... }: { }").unwrap();
+    let flake = repo.display().to_string();
+
+    let output = nyet(&[
+        "--flake",
+        &flake,
+        "--host",
+        "phone",
+        "init",
+        "--system",
+        "x86_64-linux",
+        "--yes",
+    ]);
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("init"));
+    assert!(!repo.join("flake.nix").exists());
+}
+
+#[test]
+fn migration_rollback_rejects_json_output() {
+    let output = nyet(&[
+        "migration-rollback",
+        "0123456789abcdef0123456789abcdef",
+        "--json",
+    ]);
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("migration-rollback does not support --json"));
+}

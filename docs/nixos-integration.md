@@ -1,6 +1,6 @@
 # NixOS integration
 
-Status: draft. The current code implements the managed-module MVP and a read-only repository scan plus a classic migration plan. Migration apply and in-place editing are not implemented.
+Status: draft. The current code implements the managed-module MVP plus repository scan, classic migration planning, and classic migration apply with a snapshot and exact rollback. Candidate evaluation and in-place editing are not implemented.
 
 ## Source of truth
 
@@ -119,6 +119,8 @@ First-run migration is explicit and reversible:
 
 Migration changes structure, not semantics. It must not rewrite arbitrary expressions to fit a template. If a safe structural migration cannot be produced, the engine reports the reason and leaves the repository unchanged.
 
+The current classic slice implements steps 1, 3, 8, and 9 for `/etc/nixos`: it records source hashes, snapshots the moved files, writes `flake.nix`, and records a migration transaction. It refuses nonstandard flakes, relative imports it cannot relocate, and changed source files. Steps 2, 4, 6, 7, and 10 are not implemented: migration does not evaluate or build the candidate, does not print a unified diff, and does not activate it. Run `nixos-rebuild switch --flake /etc/nixos#<host>` after reviewing the generated flake. `nyet migration-rollback <id>` restores the snapshot and refuses if a migrated file changed.
+
 `services.nyet.enable` may install and start the engine, but it must not migrate or rewrite configuration during activation. `nyet init` or a client onboarding flow initiates migration.
 
 ## Editing definitions
@@ -211,7 +213,7 @@ The current implementation still uses:
 - `/var/lib/nyet/flake.nix` as a wrapper around `/etc/nixos`.
 - `/var/lib/nyet/nyet.nix.previous` for rollback.
 
-This model is superseded by repository editing and migration. It remains in place until the repository editor can replace it without regressing apply and rollback. The MVP does not rewrite user files.
+This model is superseded by repository editing and migration. It remains in place for in-place option edits until the repository editor can replace it without regressing apply and rollback. Classic migration already rewrites `/etc/nixos` directly.
 
 ## Rollback
 

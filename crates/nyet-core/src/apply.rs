@@ -135,7 +135,7 @@ pub fn apply_safe_path(path: &str) -> bool {
         })
 }
 
-fn random_id() -> Result<String> {
+pub(crate) fn random_id() -> Result<String> {
     let mut bytes = [0u8; 16];
     File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     let mut id = String::with_capacity(32);

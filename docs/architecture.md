@@ -2,7 +2,7 @@
 
 Status: draft.
 
-Implementation note: the current code implements the managed-module MVP described in ADR 0004 plus a read-only repository scan and classic migration plan. This document describes the target repository-aware architecture from ADR 0005. Unbuilt pieces are marked planned.
+Implementation note: the current code implements the managed-module MVP described in ADR 0004 plus repository scan, classic migration planning, and classic migration apply with snapshots and rollback. This document describes the target repository-aware architecture from ADR 0005. Unbuilt pieces are marked planned.
 
 ## Problem
 

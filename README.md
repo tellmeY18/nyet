@@ -6,7 +6,7 @@ It scans an existing NixOS repository, indexes its files and definitions, evalua
 
 ## Status
 
-The current implementation is the M1 read model, the M2 intents and plans model, the managed-module MVP for M3, and the first read-only repository slice for M4. It scans `.nix` files with `rnix` and renders a classic migration plan; it does not apply repository edits yet. Apply and rollback are verified by a disposable NixOS VM test in CI.
+The current implementation is the M1 read model, the M2 intents and plans model, the managed-module MVP for M3, and the classic migration slice for M4/M5. It scans `.nix` files with `rnix`, renders a classic-to-standard plan, and applies it through the helper with a snapshot and exact rollback. It does not evaluate or activate the migrated configuration. Apply, rollback, and migration are verified by a disposable NixOS VM test in CI.
 
 The target architecture is different and more ambitious:
 
@@ -17,11 +17,11 @@ The target architecture is different and more ambitious:
 - Serve software stores through a long-running engine and JSON-RPC protocol.
 - Present options through `basic`, `intermediate`, and `advanced` tiers.
 
-A read-only repository scan and classic migration plan are implemented. Migration apply, definition-level provenance, in-place editing, package-store flows, the protocol, daemon, and GUI are not. See [ADR 0005](docs/decisions/0005-repo-aware-editing-and-migration.md) and [ADR 0006](docs/decisions/0006-beginner-first-clients.md).
+Repository scan, classic migration planning, migration apply, snapshots, and exact rollback are implemented. Candidate evaluation, definition-level provenance, in-place editing, package-store flows, the protocol, daemon, and GUI are not. See [ADR 0005](docs/decisions/0005-repo-aware-editing-and-migration.md) and [ADR 0006](docs/decisions/0006-beginner-first-clients.md).
 
 ## Try it
 
-The commands below exercise the current managed-module MVP and the read-only repository scan. They do not exercise the target in-place editing model.
+The commands below exercise the managed-module MVP, repository scan, and classic migration. They do not exercise the target in-place editing model.
 
 ```bash
 nix develop
@@ -34,6 +34,8 @@ cargo run -p nyet-cli -- --flake tests/fixtures/basic --host basic intents
 cargo run -p nyet-cli -- --flake tests/fixtures/basic --host basic plan --check
 cargo run -p nyet-cli -- --flake /path/to/classic --host host scan --json
 cargo run -p nyet-cli -- --flake /path/to/classic --host host migration-plan --system x86_64-linux
+cargo run -p nyet-cli -- --flake /etc/nixos --host host init --system x86_64-linux
+cargo run -p nyet-cli -- migration-rollback <snapshot-id> --yes
 ```
 
 `nyet plan` prints the module and diff without writing anything. `--check` evaluates the candidate module and prints the NixOS toplevel derivation path. Use `--json` for machine-readable output and `--base PATH` to diff against an existing module.
@@ -49,6 +51,8 @@ nyet rollback
 ```
 
 `apply` requires the flake at `/etc/nixos`, confirms in a terminal unless `--yes` is given, validates the candidate module, stages a short-lived plan under the user runtime directory, and invokes `nyet-helper` through `pkexec`. `apply` and `rollback` do not support `--json`; use `nyet history --json`.
+
+For a classic `/etc/nixos`, `nyet init` previews the same migration plan, snapshots the original files, moves `configuration.nix` and `hardware-configuration.nix` under `hosts/<host>/`, generates `flake.nix`, and records a transaction. It does not build or switch; run `nixos-rebuild switch --flake /etc/nixos#<host>` when ready. `nyet migration-rollback <id>` restores the exact pre-migration files and refuses if a migrated file changed.
 
 Enable the helper and polkit rule from the flake:
 
@@ -79,8 +83,10 @@ Current limits:
 - Apply rejects option paths that require quoting, such as `boot.kernel.sysctl."kernel.hostname"`.
 - The managed module must use nyet's restricted literal grammar; arbitrary Nix expressions are rejected by the helper.
 - Rollback is one step (`nh os rollback`) and restores the previous managed module, not an arbitrary generation.
-- Migration plans are not applied yet, and definition-level provenance and in-place editing are not implemented.
-- Migration planning supports classic configurations only. Nonstandard flakes and relative imports that migration cannot relocate are refused.
+- Migration supports classic `/etc/nixos` only. Nonstandard flakes and relative imports that migration cannot relocate are refused.
+- Migration writes a flake from scratch. It uses a local nixpkgs channel when one is found and otherwise falls back to `github:NixOS/nixpkgs/nixos-unstable`; review the input before switching.
+- Migration does not build, evaluate, or activate the candidate configuration, and it does not preserve a `flake.lock` from a previous layout because classic repositories do not have one.
+- Definition-level provenance and in-place editing are not implemented.
 - There is no package store, protocol, daemon, or GUI.
 
 See [docs/roadmap.md](docs/roadmap.md).
@@ -115,7 +121,7 @@ Software stores / CLI / Qt / GTK / Web / TUI
         repository edits + nh
 ```
 
-This is the target shape. Today the CLI calls `nyet-core` directly and writes a managed module. A read-only repository scan and classic migration plan exist; definition provenance, migration apply, the socket, and the `nyet-protocol` crate are not implemented.
+This is the target shape. Today the CLI calls `nyet-core` directly and writes a managed module. Repository scan, classic migration apply, snapshots, and rollback exist; definition provenance, in-place editing, the socket, and the `nyet-protocol` crate are not implemented.
 
 Core rules:
 

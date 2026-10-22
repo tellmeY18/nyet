@@ -4,8 +4,9 @@ use std::process::{Command as ProcessCommand, ExitCode};
 use clap::{Parser, Subcommand};
 use nyet_core::{
     apply_safe_host, apply_safe_path, build_plan, current_uid, default_cache_dir,
-    default_state_dir, migration_plan, scan, stage_plan, validate, Engine, EngineConfig, Error,
-    Intent, IntentOp, IntentStore, OptionPath, OptionSpec, Plan, Result, Value,
+    default_state_dir, migration_plan_with_nixpkgs, scan, stage_migration, stage_plan, validate,
+    Engine, EngineConfig, Error, FileOperation, Intent, IntentOp, IntentStore, MigrationPlan,
+    OptionPath, OptionSpec, Plan, Result, Value, DEFAULT_NIXPKGS,
 };
 
 const HELPER_PATH: &str = "/run/current-system/sw/bin/nyet-helper";
@@ -85,6 +86,21 @@ enum Command {
     MigrationPlan {
         #[arg(long)]
         system: String,
+        #[arg(long)]
+        nixpkgs: Option<String>,
+    },
+    Init {
+        #[arg(long)]
+        system: String,
+        #[arg(long)]
+        nixpkgs: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    MigrationRollback {
+        id: String,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -117,7 +133,15 @@ fn run(cli: Cli) -> Result<()> {
         Command::Rollback { yes } => rollback(&cli, *yes),
         Command::History => history(&cli),
         Command::Scan => scan_repo(&cli),
-        Command::MigrationPlan { system } => migration_plan_for(&cli, system),
+        Command::MigrationPlan { system, nixpkgs } => {
+            migration_plan_for(&cli, system, nixpkgs.as_deref())
+        }
+        Command::Init {
+            system,
+            nixpkgs,
+            yes,
+        } => init(&cli, system, nixpkgs.as_deref(), *yes),
+        Command::MigrationRollback { id, yes } => migration_rollback(&cli, id, *yes),
     }
 }
 
@@ -459,7 +483,21 @@ fn scan_repo(cli: &Cli) -> Result<()> {
     emit(&text)
 }
 
-fn migration_plan_for(cli: &Cli, system: &str) -> Result<()> {
+fn migration_plan_for(cli: &Cli, system: &str, nixpkgs: Option<&str>) -> Result<()> {
+    let plan = generate_migration_plan(cli, system, nixpkgs)?;
+
+    if cli.json {
+        return emit(&format!("{}\n", serde_json::to_string_pretty(&plan)?));
+    }
+
+    emit(&migration_plan_text(&plan))
+}
+
+fn generate_migration_plan(
+    cli: &Cli,
+    system: &str,
+    nixpkgs: Option<&str>,
+) -> Result<MigrationPlan> {
     let root = cli
         .flake
         .clone()
@@ -469,26 +507,33 @@ fn migration_plan_for(cli: &Cli, system: &str) -> Result<()> {
         .host
         .clone()
         .ok_or_else(|| Error::Usage("--host is required".to_string()))?;
-    let plan = migration_plan(&repo, &host, system)?;
-
-    if cli.json {
-        return emit(&format!("{}\n", serde_json::to_string_pretty(&plan)?));
+    let nixpkgs = nixpkgs.map(ToOwned::to_owned).unwrap_or_else(local_nixpkgs);
+    let mut plan = migration_plan_with_nixpkgs(&repo, &host, system, &nixpkgs)?;
+    if plan.nixpkgs == DEFAULT_NIXPKGS {
+        plan.warnings.push(
+            "no local nixpkgs channel was found; review the generated nixpkgs input before switching"
+                .to_string(),
+        );
     }
+    Ok(plan)
+}
 
+fn migration_plan_text(plan: &MigrationPlan) -> String {
     let mut text = String::new();
     text.push_str(&format!("root: {}\n", plan.root.display()));
     text.push_str(&format!("host: {}\n", plan.host));
     text.push_str(&format!("system: {}\n", plan.system));
+    text.push_str(&format!("nixpkgs: {}\n", plan.nixpkgs));
     text.push_str(&format!(
         "changed files: {}\n",
         plan.changed_files().join(", ")
     ));
     for operation in &plan.operations {
         match operation {
-            nyet_core::FileOperation::Create { path, contents } => {
+            FileOperation::Create { path, contents } => {
                 text.push_str(&format!("create {path}\n{contents}"));
             }
-            nyet_core::FileOperation::Rename { from, to } => {
+            FileOperation::Rename { from, to } => {
                 text.push_str(&format!("rename {from} -> {to}\n"));
             }
         }
@@ -496,7 +541,91 @@ fn migration_plan_for(cli: &Cli, system: &str) -> Result<()> {
     for warning in &plan.warnings {
         text.push_str(&format!("warning: {warning}\n"));
     }
-    emit(&text)
+    text
+}
+
+fn init(cli: &Cli, system: &str, nixpkgs: Option<&str>, yes: bool) -> Result<()> {
+    if cli.json {
+        return Err(Error::Usage(
+            "init does not support --json; use --json with migration-plan".to_string(),
+        ));
+    }
+
+    let plan = generate_migration_plan(cli, system, nixpkgs)?;
+    if plan.operations.is_empty() {
+        return emit(&format!(
+            "{} is already in the standard layout for {}\n",
+            plan.root.display(),
+            plan.host
+        ));
+    }
+
+    let root = std::fs::canonicalize(&plan.root)?;
+    let configuration = std::fs::canonicalize(CONFIGURATION_PATH).map_err(|_| {
+        Error::Usage(format!(
+            "init requires a configuration at {CONFIGURATION_PATH}"
+        ))
+    })?;
+    if root != configuration {
+        return Err(Error::Usage(format!(
+            "init only supports {CONFIGURATION_PATH}; configured root is {}",
+            root.display()
+        )));
+    }
+
+    emit(&migration_plan_text(&plan))?;
+    if !yes && !confirm(&format!("Apply this migration to {}?", plan.host))? {
+        return Err(Error::Usage("migration cancelled".to_string()));
+    }
+
+    let staged = stage_migration(&plan)?;
+    emit(&format!("applying migration {}\n", staged.id))?;
+    let status = run_helper(&["migrate", staged.id.as_str()])?;
+    if !status.success() {
+        return Err(Error::Usage(format!(
+            "nyet-helper migrate failed: {status}"
+        )));
+    }
+    emit(&format!(
+        "migration complete; snapshot {}\nNext: nixos-rebuild switch --flake {CONFIGURATION_PATH}#{}\n",
+        staged.id, plan.host
+    ))
+}
+
+fn migration_rollback(cli: &Cli, id: &str, yes: bool) -> Result<()> {
+    if cli.json {
+        return Err(Error::Usage(
+            "migration-rollback does not support --json; use nyet history --json".to_string(),
+        ));
+    }
+    if id.len() != 32
+        || !id
+            .chars()
+            .all(|character| matches!(character, '0'..='9' | 'a'..='f'))
+    {
+        return Err(Error::Usage("invalid migration snapshot id".to_string()));
+    }
+    if !yes && !confirm("Restore the repository to its pre-migration state?")? {
+        return Err(Error::Usage("migration rollback cancelled".to_string()));
+    }
+    let status = run_helper(&["migration-rollback", id])?;
+    if !status.success() {
+        return Err(Error::Usage(format!(
+            "nyet-helper migration-rollback failed: {status}"
+        )));
+    }
+    emit("migration rollback complete\n")
+}
+
+fn local_nixpkgs() -> String {
+    [
+        "/nix/var/nix/profiles/per-user/root/channels/nixos",
+        "/run/current-system/sw/share/nixpkgs",
+    ]
+    .into_iter()
+    .find(|path| Path::new(path).is_dir())
+    .map(|path| format!("path:{path}"))
+    .unwrap_or_else(|| DEFAULT_NIXPKGS.to_string())
 }
 
 fn history(cli: &Cli) -> Result<()> {
