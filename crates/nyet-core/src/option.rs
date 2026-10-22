@@ -8,6 +8,8 @@ pub struct OptionSpec {
     #[serde(rename = "type")]
     pub type_name: String,
     #[serde(default)]
+    pub choices: Option<Vec<Value>>,
+    #[serde(default)]
     pub description: String,
     #[serde(rename = "defaultText", default)]
     pub default_text: Option<String>,
@@ -47,6 +49,52 @@ pub(crate) fn list_element_type(type_name: &str) -> Option<&str> {
     let lower = type_name.to_ascii_lowercase();
     let index = lower.find("list of ")?;
     Some(type_name[index + "list of ".len()..].trim())
+}
+
+pub(crate) fn choices_for(type_name: &str) -> Option<Vec<Value>> {
+    let lower = type_name.trim().to_ascii_lowercase();
+    if lower == "boolean" {
+        return Some(vec![Value::Bool(true), Value::Bool(false)]);
+    }
+
+    let index = lower.find("one of ")?;
+    let values = quoted_values(&type_name[index + "one of ".len()..]);
+    if values.is_empty() {
+        return None;
+    }
+
+    let mut choices = Vec::with_capacity(values.len() + 1);
+    if lower[..index].contains("null or") {
+        choices.push(Value::Null);
+    }
+    choices.extend(values.into_iter().map(Value::Enum));
+    Some(choices)
+}
+
+fn quoted_values(input: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut characters = input.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '"' {
+            continue;
+        }
+        let mut value = String::new();
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => {
+                    if let Some(escaped) = characters.next() {
+                        value.push(escaped);
+                    }
+                }
+                '"' => {
+                    values.push(value);
+                    break;
+                }
+                _ => value.push(character),
+            }
+        }
+    }
+    values
 }
 
 fn coerce(value: Value, type_name: &str) -> Value {
@@ -97,6 +145,7 @@ mod tests {
         OptionSpec {
             path: OptionPath::parse("test.option").unwrap(),
             type_name: type_name.to_string(),
+            choices: None,
             description: String::new(),
             default_text: None,
             default: None,

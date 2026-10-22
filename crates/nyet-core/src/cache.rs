@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{OptionSpec, Result};
 
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 static WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -176,6 +176,7 @@ mod tests {
         OptionSpec {
             path: OptionPath::parse("services.openssh.enable").unwrap(),
             type_name: "boolean".to_string(),
+            choices: None,
             description: String::new(),
             default_text: None,
             default: Some(Value::Bool(false)),

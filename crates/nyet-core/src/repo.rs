@@ -3,7 +3,8 @@ use std::fs;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use rnix::{Root, SyntaxKind};
+use rnix::ast::{self, AstNode, HasEntry, InterpolPart};
+use rnix::{Root, SyntaxKind, SyntaxNode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -26,10 +27,19 @@ pub enum RepoKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoDefinition {
+    pub path: String,
+    pub line: usize,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoFile {
     pub path: String,
     pub imports: Vec<String>,
     pub syntax_errors: Vec<String>,
+    #[serde(default)]
+    pub definitions: Vec<RepoDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +90,15 @@ pub struct MigrationPlanFile {
     pub created: u64,
     pub expires: u64,
     pub operations: Vec<MigrationRename>,
+}
+
+impl Repo {
+    pub fn definition_count(&self) -> usize {
+        self.files
+            .iter()
+            .map(|file| file.definitions.len())
+            .sum()
+    }
 }
 
 impl MigrationPlan {
@@ -334,13 +353,107 @@ fn walk(
             .collect();
         imports.sort();
         imports.dedup();
+        let definitions = index_definitions(parsed.syntax(), &text);
         files.push(RepoFile {
             path: relative,
             imports,
             syntax_errors,
+            definitions,
         });
     }
     Ok(())
+}
+
+fn index_definitions(root: &SyntaxNode, text: &str) -> Vec<RepoDefinition> {
+    let mut definitions = Vec::new();
+    for node in root.descendants() {
+        if node.kind() != SyntaxKind::NODE_ATTR_SET || is_nested_attrset(&node) {
+            continue;
+        }
+        if let Some(attrset) = ast::AttrSet::cast(node) {
+            collect_definitions(&attrset, &[], text, &mut definitions);
+        }
+    }
+    definitions.sort_by(|left, right| {
+        left.line
+            .cmp(&right.line)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    definitions
+}
+
+fn is_nested_attrset(node: &SyntaxNode) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            SyntaxKind::NODE_PAREN => current = parent.parent(),
+            SyntaxKind::NODE_ATTRPATH_VALUE
+            | SyntaxKind::NODE_PAT_ENTRY
+            | SyntaxKind::NODE_PATTERN => return true,
+            SyntaxKind::NODE_LAMBDA | SyntaxKind::NODE_ROOT | SyntaxKind::NODE_LIST => {
+                return false;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn collect_definitions(
+    attrset: &ast::AttrSet,
+    prefix: &[String],
+    text: &str,
+    definitions: &mut Vec<RepoDefinition>,
+) {
+    for entry in attrset.entries() {
+        let ast::Entry::AttrpathValue(entry) = entry else {
+            continue;
+        };
+        let Some(attributes) = static_attr_path(&entry.attrpath()) else {
+            continue;
+        };
+        let mut path = prefix.to_vec();
+        path.extend(attributes);
+        let Some(value) = entry.value() else {
+            continue;
+        };
+        if value.syntax().kind() == SyntaxKind::NODE_ATTR_SET {
+            if let Some(nested) = ast::AttrSet::cast(value.syntax().clone()) {
+                collect_definitions(&nested, &path, text, definitions);
+            }
+            continue;
+        }
+
+        let offset: usize = entry.syntax().text_range().start().into();
+        let line = text[..offset].bytes().filter(|byte| *byte == b'\n').count() + 1;
+        definitions.push(RepoDefinition {
+            path: path.join("."),
+            line,
+            value: value.syntax().text().to_string(),
+        });
+    }
+}
+
+fn static_attr_path(attrpath: &ast::Attrpath) -> Option<Vec<String>> {
+    attrpath
+        .attrs()
+        .map(|attribute| match attribute {
+            ast::Attr::Ident(identifier) => identifier
+                .ident_token()
+                .map(|token| token.text().to_string()),
+            ast::Attr::Str(string) => {
+                let mut value = String::new();
+                for part in string.normalized_parts() {
+                    match part {
+                        InterpolPart::Literal(literal) => value.push_str(&literal),
+                        InterpolPart::Interpolation(_) => return None,
+                    }
+                }
+                Some(value)
+            }
+            ast::Attr::Dynamic(_) => None,
+        })
+        .collect()
 }
 
 pub fn stage_migration(plan: &MigrationPlan) -> Result<crate::apply::StagedPlan> {

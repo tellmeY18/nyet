@@ -100,7 +100,11 @@ impl Engine {
 
     fn options_uncached(&self) -> Result<Vec<OptionSpec>> {
         let value = self.eval(OPTIONS_NIX, &[])?;
-        Ok(serde_json::from_value(value)?)
+        let mut options: Vec<OptionSpec> = serde_json::from_value(value)?;
+        for option in &mut options {
+            option.choices = crate::option::choices_for(&option.type_name);
+        }
+        Ok(options)
     }
 
     pub fn check_module(&self, module: &str) -> Result<String> {

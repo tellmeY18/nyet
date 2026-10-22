@@ -37,6 +37,7 @@ mod tests {
         OptionSpec {
             path: OptionPath::parse(path).unwrap(),
             type_name: type_name.to_string(),
+            choices: None,
             description: String::new(),
             default_text: None,
             default: None,
