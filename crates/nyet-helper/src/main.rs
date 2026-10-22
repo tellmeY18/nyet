@@ -1231,7 +1231,11 @@ fn build_as_user(host: &str, uid: u32) -> Result<(), String> {
         .ok_or_else(|| format!("cannot find the requesting user {uid} in /etc/passwd"))?;
     let directory = build_directory(uid, account.gid)?;
     let result = directory.join("result");
-    let flake = format!("{STATE_DIR}#{host}");
+    let flake = format!("{}#{host}", directory.display());
+    if let Err(error) = stage_build_flake(&directory) {
+        let _ = fs::remove_dir_all(&directory);
+        return Err(error);
+    }
     let mut command = Command::new(nh_binary()?);
     command
         .args([
@@ -1286,6 +1290,17 @@ fn build_as_user(host: &str, uid: u32) -> Result<(), String> {
     } else {
         Err(format!("nh os build failed: {status}"))
     }
+}
+
+fn stage_build_flake(directory: &Path) -> Result<(), String> {
+    for (source, name) in [(WRAPPER_PATH, "flake.nix"), (MODULE_PATH, "nyet.nix")] {
+        let target = directory.join(name);
+        fs::copy(source, &target)
+            .map_err(|error| format!("cannot stage {source} for the build: {error}"))?;
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644))
+            .map_err(|error| format!("cannot set permissions on {}: {error}", target.display()))?;
+    }
+    Ok(())
 }
 
 struct Account {
