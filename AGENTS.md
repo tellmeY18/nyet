@@ -37,7 +37,7 @@ Frontends are replaceable clients.
 
 ## Current state
 
-The M1 read model, M2 intent/plan model, and an MVP M3 apply path work against a fixture configuration and a fixed `/etc/nixos` target. The apply and rollback path has not been exercised on a disposable NixOS VM yet.
+The M1 read model, M2 intent/plan model, and an MVP M3 apply path work against a fixture configuration and a fixed `/etc/nixos` target. Apply and rollback are verified by a disposable NixOS VM test in CI.
 
 Implemented:
 
@@ -57,12 +57,11 @@ Implemented:
 - Privileged helper: fixed plan ID, fixed `/etc/nixos` input, wrapper flake at `/var/lib/nyet/flake.nix`, managed module at `/var/lib/nyet/nyet.nix`, fixed `nh os switch /var/lib/nyet#<host>`, transaction records under `/var/lib/nyet/transactions`, and one-step rollback.
 - `packages.default`, `nixosModules.default`, and a polkit rule requiring admin authentication for `nyet-helper`.
 - 65 tests: core unit, helper unit, fixture evaluation, golden render, and CLI integration.
-- A gated x86_64-linux NixOS VM test for apply and rollback, run by GitHub Actions.
+- A green x86_64-linux NixOS VM test for apply and rollback, run by GitHub Actions.
 - Nix dev shell.
 
 Not implemented:
 
-- A green CI run of the VM test; it has not been exercised on a disposable NixOS VM yet.
 - Actual NixOS dry-build on the target platform (the current check evaluates `system.build.toplevel.drvPath`).
 - First-run setup, automatic managed-module import, and multi-host selection.
 - Build-log capture and rollback to an arbitrary recorded generation.

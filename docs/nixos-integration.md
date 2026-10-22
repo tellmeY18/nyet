@@ -1,6 +1,6 @@
 # NixOS integration
 
-Status: draft. Read, plan, and the MVP apply/rollback path are implemented. Apply and rollback are not yet verified in a disposable NixOS VM.
+Status: draft. Read, plan, and the MVP apply/rollback path are implemented. Apply and rollback are verified in a disposable NixOS VM.
 
 ## Source of truth
 
