@@ -1,7 +1,10 @@
 # ADR 0002: Crate boundaries and the intent-only client contract
 
-- Status: accepted
+- Status: accepted; amended by ADR 0005
 - Date: 2026-10-22
+- Amendment: ADR 0005 supersedes the no-parser and no-daemon rules for the target architecture. The crate boundary and intent-only client contract remain; `nyet-protocol` becomes required for software-store clients.
+
+> The original decision text below is retained for history. Where it conflicts with ADR 0005 or ADR 0006, the newer ADR wins.
 
 ## Context
 

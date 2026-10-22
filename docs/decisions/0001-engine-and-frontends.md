@@ -1,7 +1,10 @@
 # ADR 0001: Headless engine with multiple frontends
 
-- Status: accepted
+- Status: accepted; amended by ADR 0005
 - Date: 2026-10-22
+- Amendment: ADR 0005 replaces the managed-module-only write model with repository-aware editing. Nix parsing is allowed for structure and provenance; evaluation remains the source of truth. Software-store clients require the service and protocol.
+
+> The original decision text below is retained for history. Where it conflicts with ADR 0005 or ADR 0006, the newer ADR wins.
 
 ## Context
 

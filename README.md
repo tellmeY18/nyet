@@ -1,18 +1,27 @@
 # nyet
 
-nyet is a headless NixOS configuration engine with multiple frontends.
+nyet is a headless, repository-aware NixOS configuration engine with multiple frontends.
 
-It exposes NixOS options and current values, accepts pending changes, produces a reviewable plan, applies the plan through a narrow privileged helper, and supports rollback. The engine is independent of any one UI toolkit. CLI, Qt/QML, GTK4, web, and TUI clients can all speak the same protocol.
+It scans an existing NixOS repository, indexes its files and definitions, evaluates the full option surface, and turns software-store or settings-application actions into reviewable declarative Nix. The engine is independent of any one UI toolkit. CLI, Qt/QML, GTK4, web, and TUI clients can all speak the same protocol.
 
 ## Status
 
-M1 (read model) and M2 (intents and plans) work against a fixture configuration. M3 (privileged apply and rollback) has an MVP implementation: a polkit-backed helper validates a plan file, writes the managed module and wrapper flake, builds as the requesting user, then runs a fixed `nh os switch` as root, records transactions, and rolls back one generation.
+The current implementation is the M1 read model, the M2 intents and plans model, and the managed-module MVP for M3. It works against fixture configurations and a fixed `/etc/nixos` target. Apply and rollback are verified by a disposable NixOS VM test in CI.
 
-The apply path is fixed to `/etc/nixos` and requires the nyet NixOS module. Apply and rollback are verified by a disposable NixOS VM test in CI; the test covers the engine, helper, managed module, and one-step rollback.
+The target architecture is different and more ambitious:
 
-The next milestone is first-run setup.
+- Scan and parse the entire configuration repository using a lossless CST parser.
+- Correlate evaluated options with their source definitions.
+- Normalize the repository into one supported layout during explicit first-run onboarding.
+- Edit existing definitions in place, including package lists.
+- Serve software stores through a long-running engine and JSON-RPC protocol.
+- Present options through `basic`, `intermediate`, and `advanced` tiers.
+
+None of the repository scanning, migration, in-place editing, package-store, protocol, daemon, or GUI pieces are implemented yet. See [ADR 0005](docs/decisions/0005-repo-aware-editing-and-migration.md) and [ADR 0006](docs/decisions/0006-beginner-first-clients.md).
 
 ## Try it
+
+The commands below exercise the current managed-module MVP, not the target repository-editing model.
 
 ```bash
 nix develop
@@ -27,7 +36,7 @@ cargo run -p nyet-cli -- --flake tests/fixtures/basic --host basic plan --check
 
 `nyet plan` prints the module and diff without writing anything. `--check` evaluates the candidate module and prints the NixOS toplevel derivation path. Use `--json` for machine-readable output and `--base PATH` to diff against an existing module.
 
-On a NixOS host with the nyet module enabled, the write path is:
+On a NixOS host with the nyet module enabled, the current write path is:
 
 ```bash
 nyet --flake /etc/nixos --host "$(hostname)" set services.openssh.enable true
@@ -68,59 +77,64 @@ Current limits:
 - Apply rejects option paths that require quoting, such as `boot.kernel.sysctl."kernel.hostname"`.
 - The managed module must use nyet's restricted literal grammar; arbitrary Nix expressions are rejected by the helper.
 - Rollback is one step (`nh os rollback`) and restores the previous managed module, not an arbitrary generation.
-- There is no first-run setup, protocol, daemon, or GUI.
+- There is no repository scanning, migration, in-place editing, package store, protocol, daemon, or GUI.
 
 See [docs/roadmap.md](docs/roadmap.md).
 
 ## Why
 
-NixOS has a large, typed configuration surface, but no stable, reusable, safe API for tools to build on. Existing editors tend to be desktop-only, unmaintained, or tightly coupled to one UI and one privilege path.
+NixOS has a large, typed configuration surface, but no stable, reusable, safe API for tools to build on. Existing editors tend to be desktop-only, unmaintained, or tightly coupled to one UI and one privilege path. Beginners arriving from imperative systems are expected to learn Nix before they can install an application or change a setting.
 
-nyet separates the problem into three pieces:
+nyet separates the problem into four pieces:
 
-- **Engine** — evaluates the NixOS module system, owns pending intents and plans, renders a managed module, and records transactions.
-- **Frontends** — present the option model and collect intent; they never invoke Nix or root operations directly.
-- **Helper** — a small polkit-backed binary that can write the managed module and run the rebuild, with fixed paths and fixed operations.
+- **Repository index** — discovers the configuration root, parses files with a lossless CST, indexes definitions and edit ranges, and correlates them with evaluation.
+- **Engine** — evaluates the NixOS module system, owns intents, plans, edits, migrations, and transactions, and serves clients over a local protocol.
+- **Frontends** — software stores and settings applications present the model and collect intents; they never invoke Nix or root operations directly.
+- **Helper** — a small polkit-backed binary that applies root-owned edits and runs the rebuild, with fixed roots, fixed operations, and validated relative paths.
+
+The product is training wheels: every action becomes ordinary Nix in the user's repository, and the user can inspect, edit, or remove it without nyet.
 
 ## Architecture
 
 ```text
-CLI / Qt / GTK / Web / TUI
-            |
-      JSON-RPC over Unix socket
-            |
-       nyet engine
-       /          \
-  Nix evaluation   transaction store
-            |
-     nyet-helper (polkit)
-            |
-   managed module + nh
+Software stores / CLI / Qt / GTK / Web / TUI
+                    |
+          JSON-RPC over Unix socket
+                    |
+              nyet engine
+       /       |          \
+ repository  Nix eval   transaction
+   index      model        store
+       \       |          /
+          nyet-helper (polkit)
+                    |
+        repository edits + nh
 ```
 
-This is the target shape. Today the CLI calls `nyet-core` directly; the socket and `nyet-protocol` crate are added when a second client exists.
+This is the target shape. Today the CLI calls `nyet-core` directly and writes a managed module; the repository index, socket, and `nyet-protocol` crate are not implemented.
 
 Core rules:
 
-- NixOS evaluation is the source of truth. nyet does not parse Nix to discover effective configuration.
-- nyet writes a managed module; it does not rewrite the user's hand-written configuration.
-- Changes are expressed as intents, then a plan, then an applied transaction.
-- The helper never accepts arbitrary file paths or arbitrary configuration content from a frontend.
+- NixOS evaluation is the source of truth for effective configuration.
+- Parsing supplies structure, provenance, and edit locations only.
+- nyet edits existing definitions in the user's repository; it does not hide settings in a nyet-only module.
+- First-run migration normalizes structure, not semantics, and is explicit, diffed, evaluated, and reversible.
+- Package changes are list-membership intents, never imperative installs.
+- The helper never accepts arbitrary paths or configuration content from a frontend.
 - NixOS configuration, not a nyet database, remains authoritative.
 
 ### Crates
 
-Dependency rule: `nyet-cli -> nyet-core`; `nyet-helper -> nothing`.
+Dependency rule: `nyet-cli -> nyet-core`; `nyet-helper -> nothing`; `nyet-protocol` depends only on wire types.
 
 | Crate | Responsibility |
 |---|---|
-| `nyet-core` | The only component that understands NixOS configuration: option index, evaluation, values, intents, validation, plans, diffs, managed-module rendering, transactions. |
+| `nyet-core` | The only component that understands NixOS configuration: repository index, CST parsing, evaluation, values, intents, validation, plans, edits, migration, diffs, transactions. |
 | `nyet-cli` | Reference client (`nyet`): subcommands, output, exit codes. Contains no configuration logic and evaluates no Nix. |
-| `nyet-helper` | Privileged executor (`nyet-helper`): validate a plan id, write the managed module at a fixed path, run a fixed rebuild, record generations, roll back. No Nix evaluation, no client-supplied paths or content. |
+| `nyet-helper` | Privileged executor (`nyet-helper`): validate a plan id, apply scoped edits under a fixed root, run a fixed rebuild, record generations, roll back. No Nix evaluation, no client-supplied paths or content. |
+| `nyet-protocol` | Wire types and JSON-RPC schema only (planned). |
 
-The client contract is intent-only: clients read the model and express desires on options. They cannot request imperative operations. Package changes are list-membership intents, not an `install` command.
-
-The wire layer is deferred. Until a second client exists, the CLI calls `nyet-core` directly; the socket and `nyet-protocol` crate are added then.
+The client contract is intent-only: clients read the model and express desires on options, package lists, and edit targets. They cannot request imperative operations. Package changes are list-membership intents, not an `install` command.
 
 More detail: [docs/architecture.md](docs/architecture.md), [docs/protocol.md](docs/protocol.md), [docs/nixos-integration.md](docs/nixos-integration.md), [docs/testing.md](docs/testing.md).
 
@@ -128,16 +142,27 @@ More detail: [docs/architecture.md](docs/architecture.md), [docs/protocol.md](do
 
 ```text
 crates/
-  nyet-core/      domain model, option index, plans, transactions
+  nyet-core/      repository index, evaluation, plans, edits, transactions
   nyet-cli/       headless command-line frontend
   nyet-helper/    narrow privileged helper
+  nyet-protocol/  JSON-RPC types (planned)
 tests/
   fixtures/       fixture flakes and NixOS configurations
+  golden/         expected edits, migrations, and diffs
 docs/
   decisions/      architecture decision records
 ```
 
-`nyet-protocol` is added only when a second client exists. Frontends will live under a top-level `frontends/` directory once the engine API is stable enough to consume.
+After first-run migration, a managed NixOS repository uses:
+
+```text
+flake.nix
+hosts/<host>/configuration.nix
+hosts/<host>/hardware.nix
+modules/...
+```
+
+Frontends will live under a top-level `frontends/` directory once the engine API is stable enough to consume.
 
 ## Development
 
@@ -164,6 +189,8 @@ Tests are part of done. Unit tests live next to the code; Nix-backed tests use f
 - [ADR 0002: crate boundaries and intent-only client](docs/decisions/0002-crate-boundaries.md)
 - [ADR 0003: option evaluation](docs/decisions/0003-option-evaluation.md)
 - [ADR 0004: apply handoff](docs/decisions/0004-apply-handoff.md)
+- [ADR 0005: repository-aware editing and migration](docs/decisions/0005-repo-aware-editing-and-migration.md)
+- [ADR 0006: beginner-first software-store clients](docs/decisions/0006-beginner-first-clients.md)
 
 ## License
 

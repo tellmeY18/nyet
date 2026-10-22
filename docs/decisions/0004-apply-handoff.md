@@ -1,6 +1,8 @@
 # ADR 0004: Apply handoff and fixed managed state
 
-Status: accepted for the MVP.
+Status: superseded for the target architecture by ADR 0005; kept as the record of the managed-module MVP.
+
+> This ADR is historical. Where it conflicts with ADR 0005 or ADR 0006, the newer ADR wins.
 
 ## Context
 

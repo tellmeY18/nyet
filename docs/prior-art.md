@@ -35,6 +35,7 @@ Implications:
 - It is a useful reference for option UI and rebuild flow.
 - It is not a headless engine.
 - Its helper trusts the GUI for content and path.
+- Its text editing is a useful reference for CST-based definition edits, but it does not correlate edits with evaluated provenance or offer an ambiguity policy.
 - Whole configuration content is passed through a command line.
 - There is no plan, confirmation token, transaction, or rollback model in the engine.
 
@@ -46,7 +47,7 @@ None of the surveyed projects clearly combines:
 
 - Evaluation-backed option discovery and current values.
 - A stable API usable by multiple frontends.
-- A managed module instead of rewriting user files.
+- Repository-aware edits to existing definitions, with CST preservation, ambiguity refusal, snapshots, and rollback.
 - Plan, dry-build, apply, transaction, and rollback.
 - A narrow privileged helper with fixed paths and operations.
 - Package management as one provider rather than the whole product.

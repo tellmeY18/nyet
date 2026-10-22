@@ -1,7 +1,10 @@
 # ADR 0003: Option evaluation through `nix eval`
 
-- Status: accepted
+- Status: accepted; amended by ADR 0005
 - Date: 2026-10-22
+- Amendment: evaluation remains the semantic source of truth. ADR 0005 adds CST parsing for file structure, provenance, and edit ranges; parsing must not infer effective values.
+
+> The original decision text below is retained for history. Where it conflicts with ADR 0005 or ADR 0006, the newer ADR wins.
 
 ## Context
 

@@ -1,8 +1,8 @@
 # Roadmap
 
-Status: draft. M0, the POC vertical slice, M1, and M2 are complete. M3 has an MVP implementation; its VM gate is still open.
+Status: draft. M0, the POC vertical slice, M1, M2, and the M3 managed-module MVP are complete. The target architecture is repository-aware editing and migration.
 
-The order is intentional. Do not build a graphical frontend before the read and plan paths are proven through the CLI. Tests are part of done for every milestone.
+The order is intentional. Do not build graphical clients before the repository model, migration, and edit paths are proven through the CLI. Tests are part of done for every milestone.
 
 ## M0: Scaffold — done
 
@@ -24,8 +24,6 @@ Proved the read and plan loop on a fixture with no privilege and no host writes.
 - Render the managed module and show the diff.
 - Write nothing, run no build, use no helper.
 
-Done when the fixture slice runs end to end and is covered by unit, fixture-evaluation, and golden-render tests. This intentionally cuts across parts of M1 and M2: no cache, no daemon, no protocol, no privilege.
-
 ## M1: Read-only option model — done
 
 - Harden the POC read path.
@@ -33,8 +31,6 @@ Done when the fixture slice runs end to end and is covered by unit, fixture-eval
 - Read current values and basic provenance for selected paths.
 - Cache by flake contents, host, and schema version.
 - CLI commands: `nyet options`, `nyet get`.
-
-Done when the CLI can inspect a real host without writing anything, with fixture tests for every read behavior.
 
 ## M2: Intents and plans — done
 
@@ -45,74 +41,104 @@ Done when the CLI can inspect a real host without writing anything, with fixture
 - Produce a diff and candidate-module evaluation check.
 - CLI commands: `nyet set`, `nyet unset`, `nyet add`, `nyet remove`, `nyet intents`, `nyet plan`, `nyet plan --check`.
 
-Done when a user can prepare a change and inspect the exact module and diff without applying it, with golden tests for rendering and diffs.
-
 The evaluation check is not a NixOS dry-build. A real dry-build on the target platform belongs with apply and the VM tests.
 
-## M3: Privileged apply and rollback — MVP implemented, VM gate open
+## M3: Privileged apply and rollback — MVP done
 
 - Implement the helper with a validated plan spool.
 - Write the managed module and wrapper flake atomically.
-- Run a fixed rebuild operation.
+- Build as the requesting user, activate as root with `nh`.
 - Record transactions and generations.
 - Implement one-step rollback.
 - CLI commands: `nyet apply`, `nyet rollback`, `nyet history`.
 - Ship `packages.default` and `nixosModules.default` with a polkit rule.
 
-Implemented: plan staging under `/run/user/<uid>/nyet/plans`, helper validation of owner/mode/size/expiry/host/literal grammar, fixed `/etc/nixos` input, wrapper at `/var/lib/nyet/flake.nix`, managed module at `/var/lib/nyet/nyet.nix`, an exclusive transaction lock, `nh os build` as the requesting user, `nh os switch /var/lib/nyet#<host>` as root, transaction JSON records, and `nh os rollback`.
+Implemented: plan staging, helper validation, fixed `/etc/nixos` input, wrapper and managed module, exclusive lock, user build plus root switch, transaction records, and one-step rollback.
 
-A disposable NixOS VM test (`checks.x86_64-linux.vm`) applies a hostname change and rolls it back; GitHub Actions runs it, and the gate is green.
+A disposable NixOS VM test applies a hostname change, rolls it back, and applies again through a non-root plan to exercise the user build path. GitHub Actions runs the VM test. The managed-module model is superseded by M4–M6.
 
-## M4: First-run setup
+## M4: Repository index — next
 
-- Detect flake and classic configurations.
-- Detect the host attribute.
-- Create and import the managed module with explicit confirmation.
-- Record setup as a transaction.
+- Discover the configuration root and host.
+- Parse every `.nix` file with a lossless CST parser.
+- Index files, imports, definitions, package lists, and edit ranges.
+- Correlate evaluated provenance with CST definitions.
+- Mark ambiguous or dynamic definitions uneditable.
+- Add `nyet scan` and machine-readable output.
+- Cache by repository fingerprint, host, and schema version.
 
-Done when a fresh NixOS VM can be onboarded without manual file editing beyond the confirmed import.
+Done when a fixture repository, including one that does not use the standard layout, can be scanned without mutation, and every definition site is either editable or explicitly rejected.
 
-## M5: Qt/QML frontend
+## M5: Standard layout and migration
 
-- Consume the engine protocol.
-- Read-only option browser first.
-- Typed editors for supported values.
-- Plan review and apply progress.
-- Rollback and history.
+- Define the canonical layout.
+- Detect flake, classic, and mixed repositories.
+- Build a structural migration plan.
+- Snapshot files and evaluate both old and candidate configurations.
+- Show the complete diff and require confirmation.
+- Apply atomically; record an exact rollback snapshot.
+- Add `nyet init`.
 
-Done when the frontend can complete the same flow as the CLI without direct Nix or root access.
+Done when a classic configuration and an unnormalized flake can be migrated without semantic changes, idempotently, with exact rollback on failure.
 
-## M6: Additional frontends
+## M6: In-place edits, packages, and tiers
 
+- Edit existing definitions with CST-preserving changes.
+- Add missing definitions to a selected file.
+- Handle multiple definitions and ambiguity.
+- Add and remove package-list members.
+- Add `basic`, `intermediate`, and `advanced` tier metadata.
+- Evaluate every candidate and reject stale or conflicting plans.
+- Add CLI edit, package, and tier flows.
+
+Done when a user can install and remove a package, change a supported option, inspect the Nix diff, apply it, and roll it back without a managed module.
+
+## M7: Engine service, protocol, and first software store
+
+- Add `nyet-protocol` with wire types and JSON-RPC methods.
+- Add the unprivileged engine service and socket.
+- Add repository scan, migration, option, package, plan, transaction, and event methods.
+- Add the first software-store client.
+- Keep the CLI as the reference client.
+
+Done when a software store can search packages, install and remove them, configure basic application options during installation, and apply or roll back without evaluating Nix itself.
+
+## M8: Additional clients
+
+- Qt/QML.
 - GTK4/libadwaita.
 - Web.
 - TUI.
 
-Only start these after the protocol has survived the CLI and Qt clients.
+Only start these after the protocol has survived the CLI and the first store.
 
-## M7: ztOS integration
+## M9: SnowflakeOS and ztOS integration
 
 - Consume nyet as a flake input.
+- Respect each distribution's repository conventions.
 - Add a Settings entry point.
 - Reuse the engine and helper.
-- Keep frontend-specific design in ztOS.
+- Keep frontend-specific design in the distribution.
 
-Done when ztOS can inspect and change a supported NixOS setting through nyet without embedding engine logic in the shell.
+Done when the distribution can inspect and change a supported NixOS setting through nyet without embedding engine logic in the shell.
 
 ## Cross-cutting work
 
-- Extensive automated suites: unit tests next to code, fixture-backed evaluation tests, golden render and diff tests, protocol compatibility tests, and gated Linux NixOS VM tests.
-- Security review of the helper.
+- Extensive automated suites: unit tests next to code, fixture-backed repository and evaluation tests, golden edit and migration tests, protocol compatibility tests, and gated Linux NixOS VM tests.
+- Security review of the helper, relative-path validation, snapshots, and migration.
 - Conflict and provenance UX.
+- Curated option tiers and beginner-first defaults.
+- Package metadata and software-store presentation.
+- Assistant proposal validation, privacy, and prompt-injection defenses.
 - Documentation and examples.
-- Packaging for NixOS.
+- Packaging for NixOS and SnowflakeOS.
 
 See [testing.md](testing.md).
 
 ## Explicitly deferred
 
-- Managing arbitrary Nix expressions as first-class UI.
 - Home Manager and nix-darwin backends.
 - Multi-host orchestration.
 - Remote management over the network.
-- Package store features.
+- A general-purpose Nix expression UI.
+- Replacing NixOS with a nyet-specific configuration model.
