@@ -2,11 +2,15 @@
 let
   nyet = self.packages.x86_64-linux.default;
   nyetPath = builtins.unsafeDiscardStringContext (toString nyet);
+  nixpkgsPath = self.inputs.nixpkgs.outPath;
 
   baseModule = { pkgs, ... }: {
+    imports = [
+      "${nixpkgsPath}/nixos/lib/testing/nixos-test-base.nix"
+      "${nixpkgsPath}/nixos/modules/virtualisation/qemu-vm.nix"
+    ];
     system.stateVersion = "24.05";
-    system.nixos.versionSuffix = "nyet-test";
-    system.nixos.revision = null;
+    virtualisation.host.pkgs = pkgs;
     fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
     boot.loader.grub.enable = false;
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
@@ -27,9 +31,12 @@ let
           modules = [
             { nixpkgs.hostPlatform = "x86_64-linux"; }
             ({ pkgs, ... }: {
+              imports = [
+                "${pkgs.path}/nixos/lib/testing/nixos-test-base.nix"
+                "${pkgs.path}/nixos/modules/virtualisation/qemu-vm.nix"
+              ];
               system.stateVersion = "24.05";
-              system.nixos.versionSuffix = "nyet-test";
-              system.nixos.revision = null;
+              virtualisation.host.pkgs = pkgs;
               fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
               boot.loader.grub.enable = false;
               nix.settings.experimental-features = [ "nix-command" "flakes" ];
