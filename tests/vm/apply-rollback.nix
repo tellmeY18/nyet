@@ -2,6 +2,20 @@
 let
   nyet = self.packages.x86_64-linux.default;
 
+  baseModule = { pkgs, ... }: {
+    system.stateVersion = "24.05";
+    fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
+    boot.loader.grub.enable = false;
+    nix.settings.experimental-features = [ "nix-command" "flakes" ];
+    nix.settings.substituters = [ ];
+    environment.systemPackages = [
+      (pkgs.writeShellScriptBin "nyet" "exec ${nyet}/bin/nyet $@")
+      (pkgs.writeShellScriptBin "nyet-helper" "exec ${nyet}/bin/nyet-helper $@")
+      pkgs.nixos-rebuild
+      pkgs.nix
+    ];
+  };
+
   flakeFile = pkgs.writeText "nixos-flake.nix" ''
     {
       inputs.nixpkgs.url = "path:${pkgs.path}";
@@ -13,11 +27,8 @@ let
               system.stateVersion = "24.05";
               fileSystems."/" = { device = "/dev/vda"; fsType = "ext4"; };
               boot.loader.grub.enable = false;
-              networking.resolvconf.enable = false;
-              networking.dhcpcd.extraConfig = "nohook resolv.conf";
-              environment.etc."resolv.conf".text = "nameserver 10.0.2.3\n";
               nix.settings.experimental-features = [ "nix-command" "flakes" ];
-              nix.settings.substituters = [ "https://cache.nixos.org" ];
+              nix.settings.substituters = [ ];
               environment.systemPackages = [
                 (pkgs.writeShellScriptBin "nyet" "exec ${nyet}/bin/nyet $@")
                 (pkgs.writeShellScriptBin "nyet-helper" "exec ${nyet}/bin/nyet-helper $@")
@@ -30,6 +41,14 @@ let
       };
     }
   '';
+
+  target = self.inputs.nixpkgs.lib.nixosSystem {
+    modules = [
+      { nixpkgs.hostPlatform = "x86_64-linux"; }
+      baseModule
+      { networking.hostName = "nyet-applied"; }
+    ];
+  };
 in
 pkgs.testers.runNixOSTest {
   name = "nyet-apply-rollback";
@@ -39,19 +58,24 @@ pkgs.testers.runNixOSTest {
 
     programs.nyet.enable = true;
     networking.hostName = "machine";
-    networking.resolvconf.enable = false;
-    networking.dhcpcd.extraConfig = "nohook resolv.conf";
-    environment.etc."resolv.conf".text = "nameserver 10.0.2.3\n";
 
     environment.systemPackages = [ pkgs.nix pkgs.nixos-rebuild ];
 
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
-    nix.settings.substituters = [ "https://cache.nixos.org" ];
+    nix.settings.substituters = [ ];
 
     virtualisation = {
       memorySize = 2048;
       cores = 2;
-      additionalPaths = [ flakeFile nyet pkgs.path pkgs.nix pkgs.nixos-rebuild ];
+      additionalPaths = [
+        flakeFile
+        nyet
+        pkgs.path
+        pkgs.nix
+        pkgs.nixos-rebuild
+        target.config.system.build.toplevel
+        target.config.system.build.nixos-rebuild
+      ];
     };
   };
 
@@ -60,7 +84,6 @@ pkgs.testers.runNixOSTest {
     machine.wait_for_unit("multi-user.target")
 
     machine.succeed("install -Dm644 ${flakeFile} /etc/nixos/flake.nix")
-    machine.succeed("getent hosts cache.nixos.org")
     machine.succeed("nyet --flake /etc/nixos --host machine set networking.hostName nyet-applied")
     machine.succeed("nyet --flake /etc/nixos --host machine plan --check")
     machine.succeed("nyet --flake /etc/nixos --host machine apply --yes", timeout=1800)
