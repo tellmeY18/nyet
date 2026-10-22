@@ -6,8 +6,8 @@ let
 
   baseModule = { pkgs, ... }: {
     imports = [
-      "${nixpkgsPath}/nixos/lib/testing/nixos-test-base.nix"
-      "${nixpkgsPath}/nixos/modules/virtualisation/qemu-vm.nix"
+      (import "${nixpkgsPath}/nixos/lib/testing/nixos-test-base.nix")
+      (import "${nixpkgsPath}/nixos/modules/virtualisation/qemu-vm.nix")
     ];
     system.stateVersion = "24.05";
     virtualisation.host.pkgs = pkgs;
@@ -25,15 +25,15 @@ let
 
   flakeFile = pkgs.writeText "nixos-flake.nix" ''
     {
-      inputs.nixpkgs.url = "path:${pkgs.path}";
+      inputs.nixpkgs.url = "path:${nixpkgsPath}";
       outputs = { self, nixpkgs }: {
         nixosConfigurations.machine = nixpkgs.lib.nixosSystem {
           modules = [
             { nixpkgs.hostPlatform = "x86_64-linux"; }
             ({ pkgs, ... }: {
               imports = [
-                "${pkgs.path}/nixos/lib/testing/nixos-test-base.nix"
-                "${pkgs.path}/nixos/modules/virtualisation/qemu-vm.nix"
+                (import "${nixpkgsPath}/nixos/lib/testing/nixos-test-base.nix")
+                (import "${nixpkgsPath}/nixos/modules/virtualisation/qemu-vm.nix")
               ];
               system.stateVersion = "24.05";
               virtualisation.host.pkgs = pkgs;
@@ -82,6 +82,7 @@ pkgs.testers.runNixOSTest {
       additionalPaths = [
         flakeFile
         nyet
+        nixpkgsPath
         pkgs.path
         pkgs.nix
         pkgs.nixos-rebuild
