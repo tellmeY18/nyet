@@ -4,7 +4,7 @@ Status: accepted for the MVP.
 
 ## Context
 
-The engine and CLI run as the invoking user. Applying a plan needs root to write system configuration and run `nixos-rebuild`. The helper must not become an arbitrary root file-write or command API, and the user's `/etc/nixos` must remain hand-written and authoritative.
+The engine and CLI run as the invoking user. Applying a plan needs root to write system configuration and run `nh`. The helper must not become an arbitrary root file-write or command API, and the user's `/etc/nixos` must remain hand-written and authoritative.
 
 The first target is a flake at `/etc/nixos` with a single host attribute.
 
@@ -12,11 +12,11 @@ The first target is a flake at `/etc/nixos` with a single host attribute.
 
 - The managed module lives at `/var/lib/nyet/nyet.nix`.
 - nyet owns a wrapper flake at `/var/lib/nyet/flake.nix` that imports `path:/etc/nixos` and applies the managed module with `extendModules` to `nixosConfigurations.<host>`.
-- The helper runs `nixos-rebuild switch --flake /var/lib/nyet#<host>` with a fixed environment.
+- The helper runs `nh os switch /var/lib/nyet#<host>` with a fixed environment.
 - The CLI stages a plan under `/run/user/<uid>/nyet/plans` (mode `0600`, ten-minute lifetime) or `/run/nyet/plans/0` as root, then invokes the helper via `pkexec` with only the plan id.
 - The helper validates the plan's version, id, owner (`PKEXEC_UID`), mode, size, expiry, host, and a restricted literal module grammar before writing.
 - The helper serializes apply and rollback with an exclusive lock on `/var/lib/nyet/lock` and records transactions as JSON under `/var/lib/nyet/transactions`.
-- Apply saves the previous module at `/var/lib/nyet/nyet.nix.previous`. Rollback is `nixos-rebuild switch --rollback` plus restoring that module.
+- Apply saves the previous module at `/var/lib/nyet/nyet.nix.previous`. Rollback is `nh os rollback` plus restoring that module.
 
 ## Module grammar
 

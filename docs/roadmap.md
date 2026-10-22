@@ -59,7 +59,7 @@ The evaluation check is not a NixOS dry-build. A real dry-build on the target pl
 - CLI commands: `nyet apply`, `nyet rollback`, `nyet history`.
 - Ship `packages.default` and `nixosModules.default` with a polkit rule.
 
-Implemented: plan staging under `/run/user/<uid>/nyet/plans`, helper validation of owner/mode/size/expiry/host/literal grammar, fixed `/etc/nixos` input, wrapper at `/var/lib/nyet/flake.nix`, managed module at `/var/lib/nyet/nyet.nix`, an exclusive transaction lock, `nixos-rebuild switch --flake /var/lib/nyet#<host>`, transaction JSON records, and `nixos-rebuild switch --rollback`.
+Implemented: plan staging under `/run/user/<uid>/nyet/plans`, helper validation of owner/mode/size/expiry/host/literal grammar, fixed `/etc/nixos` input, wrapper at `/var/lib/nyet/flake.nix`, managed module at `/var/lib/nyet/nyet.nix`, an exclusive transaction lock, `nh os switch /var/lib/nyet#<host>`, transaction JSON records, and `nh os rollback`.
 
 A disposable NixOS VM test (`checks.x86_64-linux.vm`) applies a hostname change and rolls it back; GitHub Actions runs it. Do not describe apply as end-to-end verified until that gate has a green run.
 

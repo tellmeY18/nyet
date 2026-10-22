@@ -585,51 +585,56 @@ fn wrapper(host: &str) -> String {
 }
 
 fn rebuild(host: &str) -> Result<(), String> {
-    let binary = rebuild_binary()?;
     let flake = format!("{STATE_DIR}#{host}");
-    let status = Command::new(binary)
-        .args(["switch", "--flake", &flake])
-        .env_clear()
-        .env("PATH", "/run/current-system/sw/bin:/usr/bin:/bin")
-        .env("HOME", "/root")
-        .env("USER", "root")
-        .env("LOGNAME", "root")
-        .status()
-        .map_err(|error| format!("cannot run nixos-rebuild: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("nixos-rebuild switch failed: {status}"))
-    }
+    run_nh(&[
+        "os",
+        "switch",
+        "--bypass-root-check",
+        "--elevation-strategy",
+        "none",
+        "--no-nom",
+        &flake,
+    ])
 }
 
 fn rebuild_rollback() -> Result<(), String> {
-    let binary = rebuild_binary()?;
+    run_nh(&[
+        "os",
+        "rollback",
+        "--bypass-root-check",
+        "--elevation-strategy",
+        "none",
+        "--no-specialisation",
+    ])
+}
+
+fn run_nh(args: &[&str]) -> Result<(), String> {
+    let binary = nh_binary()?;
     let status = Command::new(binary)
-        .args(["switch", "--rollback"])
+        .args(args)
         .env_clear()
         .env("PATH", "/run/current-system/sw/bin:/usr/bin:/bin")
         .env("HOME", "/root")
         .env("USER", "root")
         .env("LOGNAME", "root")
         .status()
-        .map_err(|error| format!("cannot run nixos-rebuild: {error}"))?;
+        .map_err(|error| format!("cannot run nh: {error}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("nixos-rebuild rollback failed: {status}"))
+        Err(format!("nh {} {} failed: {status}", args[0], args[1]))
     }
 }
 
-fn rebuild_binary() -> Result<PathBuf, String> {
+fn nh_binary() -> Result<PathBuf, String> {
     [
-        "/run/current-system/sw/bin/nixos-rebuild",
-        "/nix/var/nix/profiles/system/sw/bin/nixos-rebuild",
+        "/run/current-system/sw/bin/nh",
+        "/nix/var/nix/profiles/system/sw/bin/nh",
     ]
     .into_iter()
     .map(PathBuf::from)
     .find(|candidate| candidate.exists())
-    .ok_or_else(|| "nixos-rebuild is not installed".to_string())
+    .ok_or_else(|| "nh is not installed".to_string())
 }
 
 fn generation() -> Option<String> {

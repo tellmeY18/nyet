@@ -37,7 +37,7 @@ Allowed operations:
 
 - Validate a plan id, owner, mode, size, expiry, host, and module grammar.
 - Write the generated managed module and wrapper flake to fixed paths.
-- Run a fixed `nixos-rebuild switch --flake /var/lib/nyet#<host>`.
+- Run a fixed `nh os switch /var/lib/nyet#<host>`.
 - Record a transaction and generation reference.
 - Roll back one generation with fixed arguments.
 
@@ -63,7 +63,7 @@ Planned frontends:
 - Web: remote or local browser UI.
 - TUI: terminal UI for servers and rescue environments.
 
-No frontend should invoke `nixos-rebuild` or write `/etc/nixos` directly.
+No frontend should invoke `nh` or write `/etc/nixos` directly.
 
 ### Crate map
 
@@ -216,7 +216,7 @@ The frontend is untrusted from the helper's point of view.
 - The helper validates plan ownership, mode, size, expiry, host, and a restricted literal module grammar.
 - The helper uses fixed `/etc/nixos` and `/var/lib/nyet` paths and a fixed rebuild command.
 - The helper serializes apply and rollback with an exclusive lock.
-- The helper clears the environment before invoking `nixos-rebuild`.
+- The helper clears the environment before invoking `nh`.
 - Build output is inherited by the invoking terminal; it is not captured or uploaded.
 
 Polkit identifies the requesting user through `PKEXEC_UID`. The helper verifies that the plan belongs to that user and has not expired. Any user authorized to apply NixOS changes can still select option values that execute code during a build; polkit authentication, not the grammar, is the trust boundary.

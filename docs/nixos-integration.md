@@ -146,7 +146,7 @@ It then:
 
 1. Writes the wrapper flake and managed module atomically.
 2. Saves the previous module at `/var/lib/nyet/nyet.nix.previous`.
-3. Runs `/run/current-system/sw/bin/nixos-rebuild switch --flake /var/lib/nyet#<host>` with a fixed environment.
+3. Runs `/run/current-system/sw/bin/nh os switch /var/lib/nyet#<host>` with a fixed environment.
 4. On failure, restores the previous module and wrapper.
 5. Records a transaction under `/var/lib/nyet/transactions`.
 6. Removes the plan on success.
@@ -161,7 +161,7 @@ Rollback is one step:
 
 - Record the generation before and after each apply.
 - On failure, leave the active generation unchanged and restore the previous module.
-- On explicit rollback, run `nixos-rebuild switch --rollback`, restore `/var/lib/nyet/nyet.nix` from `.previous`, and record a new transaction.
+- On explicit rollback, run `nh os rollback`, restore `/var/lib/nyet/nyet.nix` from `.previous`, and record a new transaction.
 
 The helper serializes apply and rollback with an exclusive lock on `/var/lib/nyet/lock`. Arbitrary recorded-generation rollback and build-log capture are not implemented. Do not reconstruct a previous configuration by replaying intents.
 

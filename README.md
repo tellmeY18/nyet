@@ -6,7 +6,7 @@ It exposes NixOS options and current values, accepts pending changes, produces a
 
 ## Status
 
-M1 (read model) and M2 (intents and plans) work against a fixture configuration. M3 (privileged apply and rollback) has an MVP implementation: a polkit-backed helper validates a plan file, writes the managed module and wrapper flake, runs a fixed `nixos-rebuild switch`, records transactions, and rolls back one generation.
+M1 (read model) and M2 (intents and plans) work against a fixture configuration. M3 (privileged apply and rollback) has an MVP implementation: a polkit-backed helper validates a plan file, writes the managed module and wrapper flake, runs a fixed `nh os switch`, records transactions, and rolls back one generation.
 
 The apply path is fixed to `/etc/nixos` and requires the nyet NixOS module. It has unit, rendering, and fixture-evaluation coverage, but it has **not** been exercised on a disposable Linux VM yet. Treat apply and rollback as unverified on a real target until the VM suite lands.
 
@@ -67,7 +67,7 @@ Current limits:
 - Apply only supports a flake at `/etc/nixos` and a host name made of letters, digits, `_`, or `-`.
 - Apply rejects option paths that require quoting, such as `boot.kernel.sysctl."kernel.hostname"`.
 - The managed module must use nyet's restricted literal grammar; arbitrary Nix expressions are rejected by the helper.
-- Rollback is one step (`nixos-rebuild switch --rollback`) and restores the previous managed module, not an arbitrary generation.
+- Rollback is one step (`nh os rollback`) and restores the previous managed module, not an arbitrary generation.
 - There is no first-run setup, protocol, daemon, or GUI.
 
 See [docs/roadmap.md](docs/roadmap.md).
@@ -95,7 +95,7 @@ CLI / Qt / GTK / Web / TUI
             |
      nyet-helper (polkit)
             |
-   managed module + nixos-rebuild
+   managed module + nh
 ```
 
 This is the target shape. Today the CLI calls `nyet-core` directly; the socket and `nyet-protocol` crate are added when a second client exists.

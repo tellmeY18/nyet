@@ -21,6 +21,7 @@ let
       (pkgs.writeShellScriptBin "nyet-helper" "exec ${nyetPath}/bin/nyet-helper $@")
       pkgs.nixos-rebuild
       pkgs.nix
+      pkgs.nh
     ];
   };
 
@@ -48,6 +49,7 @@ let
                 (pkgs.writeShellScriptBin "nyet-helper" "exec ${nyet}/bin/nyet-helper $@")
                 pkgs.nixos-rebuild
                 pkgs.nix
+                pkgs.nh
               ];
             })
           ];
@@ -72,8 +74,9 @@ pkgs.testers.runNixOSTest {
 
     programs.nyet.enable = true;
     networking.hostName = "machine";
+    system.switch.enable = true;
 
-    environment.systemPackages = [ pkgs.nix pkgs.nixos-rebuild ];
+    environment.systemPackages = [ pkgs.nix pkgs.nixos-rebuild pkgs.nh ];
 
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
     nix.settings.substituters = [ ];
@@ -88,6 +91,7 @@ pkgs.testers.runNixOSTest {
         pkgs.path
         pkgs.nix
         pkgs.nixos-rebuild
+        pkgs.nh
         target.config.system.build.toplevel
         target.config.system.build.nixos-rebuild
       ];
@@ -100,6 +104,7 @@ pkgs.testers.runNixOSTest {
 
     machine.succeed("install -Dm644 ${flakeFile} /etc/nixos/flake.nix")
     machine.succeed("nyet --flake /etc/nixos --host machine set networking.hostName nyet-applied")
+    machine.succeed("nix-env -p /nix/var/nix/profiles/system --set /run/current-system")
     machine.succeed("nyet --flake /etc/nixos --host machine plan --check")
     machine.succeed("nyet --flake /etc/nixos --host machine apply --yes", timeout=1800)
 
