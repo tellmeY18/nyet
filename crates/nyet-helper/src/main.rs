@@ -707,7 +707,7 @@ fn parse_account(uid: u32, passwd: &str) -> Option<Account> {
 fn build_directory(uid: u32, gid: u32) -> Result<PathBuf, String> {
     let root = Path::new(BUILD_DIR);
     fs::create_dir_all(root).map_err(|error| format!("cannot create {BUILD_DIR}: {error}"))?;
-    fs::set_permissions(root, fs::Permissions::from_mode(0o700))
+    fs::set_permissions(root, fs::Permissions::from_mode(0o711))
         .map_err(|error| format!("cannot set permissions on {BUILD_DIR}: {error}"))?;
     let directory = root.join(random_hex(16));
     fs::create_dir(&directory)
