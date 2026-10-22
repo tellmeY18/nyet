@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 const PLAN_VERSION: u32 = 1;
 const TRANSACTION_VERSION: u32 = 1;
 const STATE_DIR: &str = "/var/lib/nyet";
+const BUILD_DIR: &str = "/run/nyet/build";
 const MODULE_PATH: &str = "/var/lib/nyet/nyet.nix";
 const MODULE_PREVIOUS: &str = "/var/lib/nyet/nyet.nix.previous";
 const WRAPPER_PATH: &str = "/var/lib/nyet/flake.nix";
@@ -128,7 +130,7 @@ fn apply(id: &str) -> Result<(), String> {
         return Err(error);
     }
 
-    let result = rebuild(&plan.host);
+    let result = rebuild(&plan.host, uid);
     if result.is_err() {
         restore(MODULE_PATH, previous_module.as_deref())?;
         restore(WRAPPER_PATH, previous_wrapper.as_deref())?;
@@ -584,7 +586,8 @@ fn wrapper(host: &str) -> String {
     )
 }
 
-fn rebuild(host: &str) -> Result<(), String> {
+fn rebuild(host: &str, uid: u32) -> Result<(), String> {
+    build_as_user(host, uid)?;
     let flake = format!("{STATE_DIR}#{host}");
     run_nh(&[
         "os",
@@ -593,8 +596,127 @@ fn rebuild(host: &str) -> Result<(), String> {
         "--elevation-strategy",
         "none",
         "--no-nom",
+        "--no-specialisation",
+        "-H",
+        host,
         &flake,
     ])
+}
+
+fn build_as_user(host: &str, uid: u32) -> Result<(), String> {
+    if uid == 0 {
+        return Ok(());
+    }
+
+    let account = account(uid)
+        .ok_or_else(|| format!("cannot find the requesting user {uid} in /etc/passwd"))?;
+    let directory = build_directory(uid, account.gid)?;
+    let result = directory.join("result");
+    let flake = format!("{STATE_DIR}#{host}");
+    let mut command = Command::new(nh_binary()?);
+    command
+        .args([
+            "os",
+            "build",
+            "--elevation-strategy",
+            "none",
+            "--no-nom",
+            "--no-specialisation",
+            "-H",
+            host,
+            "--out-link",
+        ])
+        .arg(&result)
+        .arg(&flake)
+        .args(["--", "--no-write-lock-file"])
+        .env_clear()
+        .env("PATH", "/run/current-system/sw/bin:/usr/bin:/bin")
+        .env("HOME", &account.home)
+        .env("USER", &account.name)
+        .env("LOGNAME", &account.name)
+        .current_dir(&directory);
+
+    let runtime = PathBuf::from(format!("/run/user/{uid}"));
+    if runtime.exists() {
+        command.env("XDG_RUNTIME_DIR", runtime);
+    }
+
+    let gid = account.gid;
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setgroups(0, std::ptr::null()) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::setgid(gid) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::setuid(uid) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let status = command
+        .status()
+        .map_err(|error| format!("cannot run nh as user {uid}: {error}"));
+    let _ = fs::remove_dir_all(&directory);
+    let status = status?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("nh os build failed: {status}"))
+    }
+}
+
+struct Account {
+    name: String,
+    gid: u32,
+    home: PathBuf,
+}
+
+fn account(uid: u32) -> Option<Account> {
+    let passwd = fs::read_to_string("/etc/passwd").ok()?;
+    parse_account(uid, &passwd)
+}
+
+fn parse_account(uid: u32, passwd: &str) -> Option<Account> {
+    for line in passwd.lines() {
+        let fields: Vec<&str> = line.split(':').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+        if fields[2].parse::<u32>().ok() != Some(uid) {
+            continue;
+        }
+        let gid = fields[3].parse::<u32>().ok()?;
+        let home = if fields[5].is_empty() {
+            PathBuf::from("/tmp")
+        } else {
+            PathBuf::from(fields[5])
+        };
+        return Some(Account {
+            name: fields[0].to_string(),
+            gid,
+            home,
+        });
+    }
+    None
+}
+
+fn build_directory(uid: u32, gid: u32) -> Result<PathBuf, String> {
+    let root = Path::new(BUILD_DIR);
+    fs::create_dir_all(root).map_err(|error| format!("cannot create {BUILD_DIR}: {error}"))?;
+    fs::set_permissions(root, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("cannot set permissions on {BUILD_DIR}: {error}"))?;
+    let directory = root.join(random_hex(16));
+    fs::create_dir(&directory)
+        .map_err(|error| format!("cannot create build directory: {error}"))?;
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("cannot set build directory permissions: {error}"))?;
+    std::os::unix::fs::chown(&directory, Some(uid), Some(gid))
+        .map_err(|error| format!("cannot hand the build directory to {uid}: {error}"))?;
+    Ok(directory)
 }
 
 fn rebuild_rollback() -> Result<(), String> {
@@ -844,6 +966,16 @@ mod tests {
         assert!(!safe_id("../../etc/passwd"));
         assert!(safe_host("my-host_1"));
         assert!(!safe_host("host.with.dot"));
+    }
+
+    #[test]
+    fn parses_the_requesting_account() {
+        let passwd = "root:x:0:0:root:/root:/bin/sh\nalice:x:1000:1000:Alice:/home/alice:/bin/sh\n";
+        let account = parse_account(1000, passwd).unwrap();
+        assert_eq!(account.name, "alice");
+        assert_eq!(account.gid, 1000);
+        assert_eq!(account.home, PathBuf::from("/home/alice"));
+        assert!(parse_account(1001, passwd).is_none());
     }
 
     fn temporary_directory(name: &str) -> PathBuf {

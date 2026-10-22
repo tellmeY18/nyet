@@ -54,9 +54,9 @@ Implemented:
 - Candidate-module evaluation check: `nyet plan --check`.
 - CLI: `options`, `get`, `set`, `unset`, `add`, `remove`, `intents`, `plan`, `apply`, `rollback`, and `history`.
 - Plan staging under the user runtime directory with ownership, mode, size, expiry, and module-grammar validation in the helper.
-- Privileged helper: fixed plan ID, fixed `/etc/nixos` input, wrapper flake at `/var/lib/nyet/flake.nix`, managed module at `/var/lib/nyet/nyet.nix`, fixed `nh os switch /var/lib/nyet#<host>`, transaction records under `/var/lib/nyet/transactions`, and one-step rollback.
+- Privileged helper: fixed plan ID, fixed `/etc/nixos` input, wrapper flake at `/var/lib/nyet/flake.nix`, managed module at `/var/lib/nyet/nyet.nix`, builds as the requesting user, then runs fixed `nh os switch /var/lib/nyet#<host>` as root, transaction records under `/var/lib/nyet/transactions`, and one-step rollback.
 - `packages.default`, `nixosModules.default`, and a polkit rule requiring admin authentication for `nyet-helper`.
-- 65 tests: core unit, helper unit, fixture evaluation, golden render, and CLI integration.
+- 66 tests on Darwin (67 on Linux): core unit, helper unit, fixture evaluation, golden render, and CLI integration.
 - A green x86_64-linux NixOS VM test for apply and rollback, run by GitHub Actions.
 - Nix dev shell.
 

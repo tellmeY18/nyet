@@ -146,7 +146,7 @@ It then:
 
 1. Writes the wrapper flake and managed module atomically.
 2. Saves the previous module at `/var/lib/nyet/nyet.nix.previous`.
-3. Runs `/run/current-system/sw/bin/nh os switch /var/lib/nyet#<host>` with a fixed environment.
+3. Builds as the requesting user with `/run/current-system/sw/bin/nh os build`, then runs `nh os switch /var/lib/nyet#<host>` as root with a fixed environment.
 4. On failure, restores the previous module and wrapper.
 5. Records a transaction under `/var/lib/nyet/transactions`.
 6. Removes the plan on success.

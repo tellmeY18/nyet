@@ -37,7 +37,7 @@ Allowed operations:
 
 - Validate a plan id, owner, mode, size, expiry, host, and module grammar.
 - Write the generated managed module and wrapper flake to fixed paths.
-- Run a fixed `nh os switch /var/lib/nyet#<host>`.
+- Build as the requesting user, then run a fixed `nh os switch /var/lib/nyet#<host>` as root.
 - Record a transaction and generation reference.
 - Roll back one generation with fixed arguments.
 
@@ -202,7 +202,7 @@ Evaluation must not block the protocol loop. Long reads run in a worker and stre
 7. Client calls `plan.apply` with the plan identifier and token.
 8. Engine stages the plan in the user runtime directory and passes only the id to the helper.
 9. Helper validates the plan and writes the wrapper flake and managed module atomically.
-10. Helper runs the fixed rebuild and passes build output through.
+10. Helper builds as the requesting user, then runs the fixed switch as root and passes output through.
 11. On success, helper records a transaction and generation and removes the plan.
 12. On failure, helper restores the previous module and wrapper; the active generation is unchanged and the transaction records the failure.
 
@@ -216,7 +216,7 @@ The frontend is untrusted from the helper's point of view.
 - The helper validates plan ownership, mode, size, expiry, host, and a restricted literal module grammar.
 - The helper uses fixed `/etc/nixos` and `/var/lib/nyet` paths and a fixed rebuild command.
 - The helper serializes apply and rollback with an exclusive lock.
-- The helper clears the environment before invoking `nh`.
+- The helper clears the environment before invoking `nh`, and drops to the requesting user for the build.
 - Build output is inherited by the invoking terminal; it is not captured or uploaded.
 
 Polkit identifies the requesting user through `PKEXEC_UID`. The helper verifies that the plan belongs to that user and has not expired. Any user authorized to apply NixOS changes can still select option values that execute code during a build; polkit authentication, not the grammar, is the trust boundary.

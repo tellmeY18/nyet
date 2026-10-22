@@ -6,7 +6,7 @@ It exposes NixOS options and current values, accepts pending changes, produces a
 
 ## Status
 
-M1 (read model) and M2 (intents and plans) work against a fixture configuration. M3 (privileged apply and rollback) has an MVP implementation: a polkit-backed helper validates a plan file, writes the managed module and wrapper flake, runs a fixed `nh os switch`, records transactions, and rolls back one generation.
+M1 (read model) and M2 (intents and plans) work against a fixture configuration. M3 (privileged apply and rollback) has an MVP implementation: a polkit-backed helper validates a plan file, writes the managed module and wrapper flake, builds as the requesting user, then runs a fixed `nh os switch` as root, records transactions, and rolls back one generation.
 
 The apply path is fixed to `/etc/nixos` and requires the nyet NixOS module. Apply and rollback are verified by a disposable NixOS VM test in CI; the test covers the engine, helper, managed module, and one-step rollback.
 

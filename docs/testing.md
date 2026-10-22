@@ -1,6 +1,6 @@
 # Testing
 
-Status: 65 tests across core unit, helper unit, fixture evaluation, golden render, and CLI integration, plus a green gated x86_64-linux NixOS VM test run by CI. Protocol tests are pending.
+Status: 66 tests on Darwin (67 on Linux) across core unit, helper unit, fixture evaluation, golden render, and CLI integration, plus a green gated x86_64-linux NixOS VM test run by CI. Protocol tests are pending.
 
 Tests are part of the definition of done for every milestone. They are written with the behavior they protect, not in a later cleanup pass.
 
